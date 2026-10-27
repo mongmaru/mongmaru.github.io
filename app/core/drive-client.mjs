@@ -16,7 +16,7 @@ class DriveClient {
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   }) {
     this.token = token;
-    this.fetch = fetch;
+    this.fetch = fetch.bind(globalThis);
     this.sleep = sleep;
   }
   async request(url, options = {}) {
