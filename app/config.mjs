@@ -1,0 +1,4 @@
+// Public browser OAuth client ID. No client secret or user token.
+export const GOOGLE_WEB_CLIENT_ID =
+  "674426842063-d467g025nguc61bor0mqlp8tdpreea3g.apps.googleusercontent.com";
+export const APP_VERSION = "1.0.0";

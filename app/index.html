@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#C9232C" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="H.PLAN" />
+    <meta
+      name="description"
+      content="내 하루를 차분하게. 일정·업무·프로젝트를 정리하는 H.PLAN 모바일 플래너."
+    />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+    <title>H.PLAN · 내 하루의 계획</title>
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <header class="topbar">
+        <a href="#planner" class="brand" aria-label="H.PLAN 플래너"
+          ><img src="icons/icon.svg" alt="" width="28" height="28" /><span
+            >H.PLAN</span
+          ></a
+        >
+        <div class="top-actions">
+          <span id="save-state" role="status">불러오는 중</span
+          ><button
+            id="search-open"
+            class="icon-button"
+            aria-label="전체 검색"
+          ></button
+          ><button id="undo" class="icon-button" aria-label="실행 취소"></button
+          ><button
+            id="redo"
+            class="icon-button"
+            aria-label="다시 실행"
+          ></button>
+        </div>
+      </header>
+      <div id="notice" role="status" hidden></div>
+      <main id="main" tabindex="-1">
+        <div class="loading">기록을 안전하게 불러오고 있습니다…</div>
+      </main>
+      <nav class="bottom-nav" aria-label="주 메뉴">
+        <button data-route="planner"></button
+        ><button data-route="projects"></button
+        ><button data-route="overview"></button
+        ><button data-route="settings"></button>
+      </nav>
+    </div>
+    <dialog id="modal" aria-labelledby="modal-title">
+      <form id="modal-form">
+        <header class="modal-head">
+          <h2 id="modal-title"></h2>
+          <button
+            type="button"
+            id="modal-close"
+            class="icon-button"
+            aria-label="닫기"
+          ></button>
+        </header>
+        <div id="modal-body" class="modal-body"></div>
+        <footer id="modal-footer" class="modal-footer"></footer>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <noscript>H.PLAN을 사용하려면 JavaScript를 허용해 주세요.</noscript>
+    <script type="module" src="main.mjs"></script>
+  </body>
+</html>

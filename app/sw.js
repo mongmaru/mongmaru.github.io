@@ -1,0 +1,7 @@
+const VERSION='hplan-mobile-782598a13c9a';
+const FILES=['./','index.html','app.css','main.mjs','ui.mjs','forms.mjs','reports-ui.mjs','config.mjs','manifest.webmanifest','core/domain.mjs','core/sync-model.mjs','core/repository.mjs','core/drive-client.mjs','core/sync.mjs','core/auth.mjs','core/reports.mjs','icons/icon.svg','icons/icon-192.png','icons/icon-512.png','icons/maskable-512.png','icons/apple-touch-icon.png','fonts/NanumSquareR.ttf','fonts/NanumSquareB.ttf','vendor/exceljs.min.js'];
+self.addEventListener('install',event=>event.waitUntil(caches.open(VERSION).then(cache=>cache.addAll(FILES))));
+self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('hplan-mobile-')&&k!==VERSION).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+self.addEventListener('message',event=>{if(event.data==='SKIP_WAITING')self.skipWaiting();});
+self.addEventListener('fetch',event=>{const u=new URL(event.request.url),scope=new URL(self.registration.scope);if(event.request.method!=='GET'||u.origin!==scope.origin||!u.pathname.startsWith(scope.pathname))return;
+ event.respondWith(caches.open(VERSION).then(async cache=>{const cached=await cache.match(event.request,{ignoreSearch:true});if(cached)return cached;try{return await fetch(event.request);}catch(e){if(event.request.mode==='navigate')return cache.match('./');throw e;}}));});

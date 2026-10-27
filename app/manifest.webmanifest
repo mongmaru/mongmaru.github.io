@@ -1,0 +1,4 @@
+{
+  "id":"/app/","name":"H.PLAN","short_name":"H.PLAN","description":"일정·업무·프로젝트를 정리하는 개인 플래너","lang":"ko","start_url":"./","scope":"./","display":"standalone","background_color":"#f5f5f5","theme_color":"#C9232C","orientation":"any",
+  "icons":[{"src":"icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"icons/maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]
+}
