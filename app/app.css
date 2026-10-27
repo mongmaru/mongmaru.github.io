@@ -555,7 +555,7 @@ h3 {
   font-size: 14px;
   line-height: 1.8;
 }
-.empty svg {
+.empty > svg {
   width: 34px;
   height: 34px;
   margin-bottom: 12px;
