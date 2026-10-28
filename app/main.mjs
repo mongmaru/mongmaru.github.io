@@ -4,7 +4,12 @@ import * as model from "./core/sync-model.mjs";
 import { DriveClient } from "./core/drive-client.mjs";
 import { SyncController } from "./core/sync.mjs";
 import { WebAuth } from "./core/auth.mjs";
-import { GOOGLE_WEB_CLIENT_ID, APP_VERSION } from "./config.mjs";
+import { PersistentAuth } from "./core/persistent-auth.mjs";
+import {
+  GOOGLE_WEB_CLIENT_ID,
+  APP_VERSION,
+  AUTH_SERVER_URL,
+} from "./config.mjs";
 import {
   esc,
   icon,
@@ -35,8 +40,16 @@ const $ = (s) => document.querySelector(s),
   form = $("#modal-form"),
   body = $("#modal-body"),
   footer = $("#modal-footer");
+const createAuth = () =>
+  AUTH_SERVER_URL
+    ? new PersistentAuth(AUTH_SERVER_URL)
+    : new WebAuth(GOOGLE_WEB_CLIENT_ID);
+const authConnected = () =>
+  typeof auth.connected === "boolean"
+    ? auth.connected
+    : !!auth.tokenValue && Date.now() < auth.expires;
 let repo,
-  auth = new WebAuth(GOOGLE_WEB_CLIENT_ID),
+  auth = createAuth(),
   sync = null,
   channel,
   busy = false,
@@ -62,7 +75,10 @@ let overviewFilter = "today",
   dateTo = "",
   connecting = false,
   pendingAuth = null,
-  connectionGeneration = 0;
+  connectionGeneration = 0,
+  restoring = null,
+  restoringAuth = null,
+  disconnecting = false;
 const nav = [
   ["planner", "플래너", "calendar"],
   ["projects", "프로젝트", "folder"],
@@ -158,6 +174,7 @@ function closeModal(force = false) {
   rememberDraft();
   modal.close();
   if (sync) sync.editing = false;
+  scheduleSync();
   draftKey = null;
   saveHandler = null;
   render();
@@ -186,8 +203,7 @@ async function action(a, message, baseline = null) {
 }
 function scheduleSync() {
   clearTimeout(syncTimer);
-  if (sync && !sync.stopped)
-    syncTimer = setTimeout(() => runSync().catch(() => {}), 8000);
+  if (sync && !sync.stopped) syncTimer = setTimeout(() => autoSync(), 2000);
 }
 function applySettings() {
   const s = state().settings,
@@ -415,7 +431,7 @@ function overview() {
     )}<button data-action="planner-filter">${icon("filter")} 필터</button></div>${selectedBar()}<p class="section-title">${esc(names[overviewFilter] || "기록")} · ${list.length}개</p><div class="agenda">${agenda(list, { showDate: true })}</div>`;
 }
 function driveCard() {
-  const connected = !!auth.tokenValue && Date.now() < auth.expires,
+  const connected = authConnected(),
     status = sync?.status(),
     account = repo.record.activeAccount;
   return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google Drive</h2><p class="account">${connected ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button("Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
@@ -424,7 +440,7 @@ function settings() {
   const s = state().settings,
     status = sync?.status(),
     account = repo.record.activeAccount,
-    connected = !!auth.tokenValue && Date.now() < auth.expires;
+    connected = authConnected();
   main.innerHTML = `<div class="heading-row"><div><p class="eyebrow">MAKE IT YOURS</p><h1>설정</h1><p>H.PLAN 모바일 ${APP_VERSION}</p></div></div><div class="settings-layout"><div class="stack">${driveCard()}<section><p class="section-title">데이터와 복구</p><div class="action-list">${button("백업 파일 내려받기", "backup", "", "download")}${button("백업 파일 가져오기", "restore", "", "upload")}${button("기기 내 자동 백업", "backups", "", "clock")}${button("보고서 · Excel · 인쇄", "report", "", "print")}${button("휴지통", "trash", "", "trash")}${button("저장공간 보호 요청", "persist", "", "check")}</div><p class="help" style="padding:10px">브라우저 데이터를 삭제하면 기기 기록도 지워질 수 있습니다. Drive 동기화나 별도 백업을 함께 사용하세요.</p></section></div><div class="stack"><section><p class="section-title">화면과 사용성</p><div class="settings-group"><div class="setting-row"><div><strong>테마</strong><p>밝게 · 어둡게 · 기기 설정</p></div><select id="setting-theme" aria-label="테마">${[
     ["light", "밝게"],
     ["dark", "어둡게"],
@@ -640,32 +656,124 @@ function filterForm() {
     { label: "적용", danger: button("초기화", "filter-reset", "ghost") },
   );
 }
-async function runSync(backup = false) {
+async function runSync(backup = false, quiet = false) {
   if (!sync || sync.stopped) {
-    toast("Google 계정을 먼저 연결해 주세요.");
+    if (!quiet) toast("Google 계정을 먼저 연결해 주세요.");
     return;
   }
   if (!navigator.onLine) {
-    toast("인터넷 연결 후 동기화할 수 있습니다.");
+    if (!quiet) toast("인터넷 연결 후 동기화할 수 있습니다.");
     return;
   }
+  if (quiet && auth.requiresReauth) return;
+  const controller = sync,
+    sessionAuth = auth;
   try {
-    const result = await sync.sync(backup);
-    if (sync.status().conflictCount)
+    let result;
+    try {
+      result = await controller.sync(backup);
+    } catch (error) {
+      // Retry a rejected short-lived token once through the remembered grant.
+      if (error.code !== "AUTH" || !sessionAuth.restore || sync !== controller)
+        throw error;
+      await sessionAuth.token(true);
+      result = await controller.sync(backup);
+    }
+    if (sync !== controller) return;
+    if (controller.status().conflictCount)
       toast("서로 다른 수정 내용이 있습니다. 설정에서 확인해 주세요.");
-    else if (!sync.editing)
-      $("#save-state").textContent = sync.status().pending
+    else if (result.completed && !controller.editing)
+      $("#save-state").textContent = controller.status().pending
         ? "동기화 대기"
         : "동기화됨";
     return result;
   } catch (e) {
-    toast(e.message);
+    if (sync === controller) {
+      $("#save-state").textContent = sessionAuth.requiresReauth
+        ? "연결 확인 필요"
+        : "동기화 대기";
+      if (!modal.open && route === "settings") settings();
+    }
+    if (!quiet) toast(e.message);
     throw e;
   }
 }
+async function attachDrive(nextAuth, account, attempt) {
+  if (attempt !== connectionGeneration) return;
+  sync?.stop();
+  await repo.connectAccount(
+    account.sub,
+    () => attempt === connectionGeneration,
+  );
+  if (
+    attempt !== connectionGeneration ||
+    repo.record.activeAccount !== account.sub
+  )
+    return;
+  if (!nextAuth.requiresReauth) await nextAuth.commit?.();
+  if (attempt !== connectionGeneration) return;
+  auth = nextAuth;
+  const controller = new SyncController({
+    repo,
+    account: account.sub,
+    client: new DriveClient({
+      token: () => {
+        if (
+          controller.stopped ||
+          auth !== nextAuth ||
+          repo.record.activeAccount !== account.sub
+        )
+          throw Error("Google 연결이 변경되어 이전 요청을 중지했습니다.");
+        return nextAuth.token();
+      },
+    }),
+    onStatus: () => {
+      if (route === "settings" && !modal.open) settings();
+    },
+  });
+  sync = controller;
+  sync.editing = modal.open;
+  render();
+  await runSync(false, true);
+}
+async function restoreDrive() {
+  if (
+    !AUTH_SERVER_URL ||
+    connecting ||
+    disconnecting ||
+    (sync && !sync.stopped)
+  )
+    return;
+  if (restoring) return restoring;
+  const attempt = connectionGeneration;
+  restoring = (async () => {
+    const candidate = createAuth();
+    restoringAuth = candidate;
+    await candidate.prepare();
+    const account = await candidate.restore();
+    if (!account || attempt !== connectionGeneration || connecting) return;
+    // An automatic restore must never switch the account behind the user's back.
+    if (repo.record.activeAccount && repo.record.activeAccount !== account.sub)
+      return;
+    await attachDrive(candidate, account, attempt);
+  })().finally(() => {
+    restoring = null;
+    restoringAuth = null;
+  });
+  return restoring;
+}
+async function autoSync() {
+  try {
+    if (!sync || sync.stopped) {
+      await restoreDrive();
+      return;
+    }
+    if (sync && !sync.stopped) await runSync(false, true);
+  } catch {} // A remembered connection and local edits survive transient errors.
+}
 async function connectDrive() {
-  if (connecting) return;
-  if (!GOOGLE_WEB_CLIENT_ID) {
+  if (connecting || disconnecting) return;
+  if (!GOOGLE_WEB_CLIENT_ID && !AUTH_SERVER_URL) {
     toast(
       "Google 웹앱 등록을 준비하고 있습니다. 기기 저장은 정상 사용할 수 있습니다.",
     );
@@ -673,10 +781,11 @@ async function connectDrive() {
   }
   connecting = true;
   const attempt = ++connectionGeneration,
-    nextAuth = new WebAuth(GOOGLE_WEB_CLIENT_ID);
+    nextAuth = createAuth();
   pendingAuth = nextAuth;
   try {
-    await nextAuth.prepare();
+    // PersistentAuth opens the consent window synchronously during the original tap.
+    if (!nextAuth.restore) await nextAuth.prepare();
     if (attempt !== connectionGeneration) return;
     const account = await nextAuth.connect();
     if (attempt !== connectionGeneration) return;
@@ -687,41 +796,11 @@ async function connectDrive() {
         "다른 Google 계정입니다. 이 기기의 현재 기록을 선택한 계정으로 동기화할까요?",
       )
     ) {
-      nextAuth.disconnect();
+      await nextAuth.disconnect();
       return;
     }
-    sync?.stop();
-    auth = nextAuth;
-    await repo.connectAccount(
-      account.sub,
-      () => attempt === connectionGeneration,
-    );
-    if (
-      attempt !== connectionGeneration ||
-      repo.record.activeAccount !== account.sub
-    )
-      return;
-    const controller = new SyncController({
-      repo,
-      account: account.sub,
-      client: new DriveClient({
-        token: () => {
-          if (
-            controller.stopped ||
-            auth !== nextAuth ||
-            repo.record.activeAccount !== account.sub
-          )
-            throw Error("Google 연결이 변경되어 이전 요청을 중지했습니다.");
-          return nextAuth.token();
-        },
-      }),
-      onStatus: () => {
-        if (route === "settings" && !modal.open) settings();
-      },
-    });
-    sync = controller;
-    sync.editing = modal.open;
-    await runSync();
+    await attachDrive(nextAuth, account, attempt);
+    channel?.postMessage({ type: "auth-change" });
     render();
   } finally {
     if (pendingAuth === nextAuth) pendingAuth = null;
@@ -1129,7 +1208,7 @@ async function handle(a) {
     case "drive-manage":
       return modalOpen(
         "Google Drive 관리",
-        `<div class="stack"><p>저장 위치: 내 드라이브 / H.PLAN</p><p class="help">자동 백업은 하루 1회, 기기별 최근 30개입니다. 웹앱을 열었을 때 동기화하며 Google 연결이 만료되면 갱신이 필요합니다.</p><div class="action-list">${button("계정 연결 또는 변경", "drive-connect", "", "cloud")}${button("Drive 백업 만들기", "drive-backup", "", "download")}${button("Drive 폴더 열기", "drive-folder", "", "folder")}${button("충돌 내용 확인", "drive-conflicts", "", "note")}${button("연결 해제", "drive-disconnect", "danger")}</div></div>`,
+        `<div class="stack"><p>저장 위치: 내 드라이브 / H.PLAN</p><p class="help">자동 백업은 하루 1회, 기기별 최근 30개입니다. ${AUTH_SERVER_URL ? "한 번 연결하면 다음 실행에도 연결을 기억하고 자동 동기화합니다. Google 권한을 철회하거나 기기 데이터를 삭제하면 다시 연결해야 합니다." : "웹앱을 열었을 때 동기화하며 Google 연결이 만료되면 갱신이 필요합니다."}</p><div class="action-list">${button("계정 연결 또는 변경", "drive-connect", "", "cloud")}${button("Drive 백업 만들기", "drive-backup", "", "download")}${button("Drive 폴더 열기", "drive-folder", "", "folder")}${button("충돌 내용 확인", "drive-conflicts", "", "note")}${button("연결 해제", "drive-disconnect", "danger")}</div></div>`,
       );
     case "drive-connect":
       closeModal(true);
@@ -1151,16 +1230,24 @@ async function handle(a) {
           "이 기기의 Google 연결을 해제할까요? 로컬 기록과 Drive 파일은 유지합니다.",
         )
       ) {
+        disconnecting = true;
         connectionGeneration++;
-        pendingAuth?.disconnect();
+        pendingAuth?.disconnect()?.catch?.(() => {});
+        restoringAuth?.disconnect()?.catch?.(() => {});
         pendingAuth = null;
         connecting = false;
         sync?.stop();
         sync = null;
-        auth.disconnect();
-        await repo.disconnect();
-        closeModal(true);
-        render();
+        try {
+          if (auth.disconnectAll) await auth.disconnectAll();
+          else await auth.disconnect();
+          await repo.disconnect();
+          channel?.postMessage({ type: "auth-change" });
+          closeModal(true);
+          render();
+        } finally {
+          disconnecting = false;
+        }
       }
       return;
     case "drive-folder":
@@ -1387,7 +1474,7 @@ window.visualViewport?.addEventListener("scroll", viewport);
 window.addEventListener("resize", viewport);
 window.addEventListener("online", () => {
   renderNotice();
-  runSync().catch(() => {});
+  autoSync();
 });
 window.addEventListener("offline", renderNotice);
 window.addEventListener("beforeunload", rememberDraft);
@@ -1398,12 +1485,17 @@ window.addEventListener("beforeinstallprompt", (e) => {
 document.addEventListener("visibilitychange", async () => {
   if (!document.hidden && repo) {
     await repo.reload();
-    if (!modal.open) runSync().catch(() => {});
+    if (!modal.open) autoSync();
+  } else if (document.hidden && sync?.status().pending && !modal.open) {
+    runSync(false, true).catch(() => {});
   }
 });
+window.addEventListener("pageshow", () => {
+  if (repo && !modal.open) autoSync();
+});
 setInterval(() => {
-  if (!document.hidden && !modal.open) runSync().catch(() => {});
-}, 300000);
+  if (!document.hidden && !modal.open) autoSync();
+}, 60000);
 try {
   repo = await Repository.open(await IndexedStore.open());
   repo.subscribe(() => {
@@ -1411,8 +1503,19 @@ try {
   });
   if ("BroadcastChannel" in window) {
     channel = new BroadcastChannel("hplan-mobile");
-    channel.onmessage = async () => {
+    channel.onmessage = async (event) => {
       await repo.reload();
+      if (event.data?.type === "auth-change") {
+        connectionGeneration++;
+        pendingAuth?.disconnect()?.catch?.(() => {});
+        restoringAuth?.disconnect()?.catch?.(() => {});
+        pendingAuth = null;
+        connecting = false;
+        sync?.stop();
+        sync = null;
+        auth = createAuth();
+        autoSync();
+      } else scheduleSync();
       if (modal.open)
         toast("다른 창의 기록이 변경됐습니다. 작성 내용은 유지됩니다.");
     };
@@ -1423,7 +1526,8 @@ try {
   await action({ type: "materialize", through: monthEnd(date) });
   render();
   $("#save-state").textContent = "기기에 저장됨";
-  if (GOOGLE_WEB_CLIENT_ID) auth.prepare().catch(() => {});
+  if (AUTH_SERVER_URL) autoSync();
+  else if (GOOGLE_WEB_CLIENT_ID) auth.prepare().catch(() => {});
   if ("serviceWorker" in navigator) {
     let reloading = false,
       hadController = !!navigator.serviceWorker.controller;
