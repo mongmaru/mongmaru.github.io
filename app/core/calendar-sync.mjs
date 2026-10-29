@@ -20,7 +20,7 @@ function recurrenceLines(e) {
   if(!e.recurrenceRule&&e.recurrence==='monthly'&&+e.date.slice(-2)>28)normalized+=';BYMONTHDAY='+Array.from({length:+e.date.slice(-2)-27},(_,i)=>28+i).join(',')+';BYSETPOS=-1';
   if(normalized&&e.recurrenceUntil){normalized=normalized.replace(/;UNTIL=[^;]+/,'');
     if(/;COUNT=/.test(normalized)){const count=recurrenceDates({...e,recurrenceUntil:null,recurrenceExceptions:[],google:undefined},e.recurrenceUntil).length;normalized=normalized.replace(/;COUNT=(\d+)/,(_,n)=>';COUNT='+Math.max(1,Math.min(+n,count)));}
-    else normalized+=';UNTIL='+e.recurrenceUntil.replaceAll('-','')+(e.allDay===false?'T235959Z':'');}
+    else {const until=e.allDay===false?new Date(zonedEpoch(shiftDate(e.recurrenceUntil,1),'00:00',e.timeZone||'Asia/Seoul')-1000).toISOString().replace(/[-:]/g,'').replace('.000Z','Z'):e.recurrenceUntil.replaceAll('-','');normalized+=';UNTIL='+until;}}
   const rawLines=e.recurrenceLines||e.google?.resource?.recurrence||[];
   const extras=rawLines.filter(x=>!/^RRULE:|^EXDATE[;:]/.test(x));
   const remaining=new Set(e.recurrenceExceptions||[]);
@@ -104,12 +104,23 @@ function mergeFields(base,local,remote,at) {
   }
   return {merged,conflicts};
 }
+function occurrenceBase(master,occurrence,projects) {
+  const base=clone(master.google?.base||localProjection(master,projects)),date=occurrence.originalDate||occurrence.google?.originalDate||occurrence.date;
+  if(base.schedule){const duration=base.schedule.endDate?Math.round((Date.parse(base.schedule.endDate+'T12:00:00Z')-Date.parse(base.schedule.date+'T12:00:00Z'))/86400000):null;
+    base.schedule={...base.schedule,date,endDate:duration===null?null:shiftDate(date,duration)};}
+  base.recurrence={rule:null,exceptions:[],lines:[]};base.status=occurrence.kind==='question'?'open':'planned';
+  return base;
+}
 function inImportRange(entry,cutoff) {
   if((entry.endDate||entry.date)>=cutoff)return true;
   if(!isRecurring(entry))return false;
+  const duration=entry.endDate?Math.round((Date.parse(entry.endDate+'T12:00:00Z')-Date.parse(entry.date+'T12:00:00Z'))/86400000):0;
+  // A recurring master may have ended before the cutoff while its final
+  // occurrence still overlaps the first imported day, including across UTC.
+  if(recurrenceDates(entry,cutoff,shiftDate(cutoff,-duration)).length)return true;
   if(recurrenceDateValues(entry.recurrenceLines||entry.google?.resource?.recurrence||[],'RDATE',entry.timeZone).some(date=>date>=cutoff))return true;
   const rule=entry.recurrenceRule?parseRule(entry.recurrenceRule):null;if(!rule)return false;
-  if(rule.UNTIL&&rule.UNTIL.slice(0,8)<cutoff.replaceAll('-',''))return false;
+  if(rule.UNTIL&&recurrenceDateValues(['RDATE:'+rule.UNTIL],'RDATE',entry.timeZone)[0]<=cutoff)return false;
   if(rule.COUNT&&recurrenceDates({...entry,google:undefined,recurrenceExceptions:[]},shiftDate(cutoff,-1)).length>=+rule.COUNT)return false;
   return true;
 }
@@ -142,13 +153,18 @@ class CalendarSync {
   run(){if(this.running)return this.running;this.running=this.perform().finally(()=>{this.running=null;});return this.running;}
   async perform() {
     this.guard();const loaded=await this.loadLinkState(this.accountId);
-    this.ledger={version:1,links:{},calendars:{},...(loaded||{})};this.result={imported:0,exported:0,deleted:0,conflicts:[],errors:[],lastSyncAt:null,cutoff:null};
+    this.ledger={version:1,links:{},calendars:{},...(loaded||{})};this.result={imported:0,exported:0,deleted:0,conflicts:[],errors:[],lastSyncAt:loaded?.lastSyncAt||null,lastAttemptAt:null,cutoff:null};
     const shared=(await this.getState()).calendarAccounts?.[this.accountId]?.cutoff;
     const previousCutoff=this.ledger.cutoff;
     this.ledger.cutoff=[shared,this.ledger.cutoff,dateInZone(this.now()).slice(0,7)+'-01'].filter(Boolean).sort()[0];this.result.cutoff=this.ledger.cutoff;
     if(previousCutoff&&this.ledger.cutoff<previousCutoff)this.ledger.calendars={};
     await this.change(s=>{s.calendarAccounts={...(s.calendarAccounts||{}),[this.accountId]:{cutoff:this.ledger.cutoff}};},'google-calendar-cutoff');
-    for(const e of (await this.getState()).entries)if(e.google?.accountId===this.accountId&&(!e.seriesId||e.seriesEdited))this.ledger.links[e.id]={...(this.ledger.links[e.id]||{}),...clone(e.google),origin:e.origin||'hplan'};
+    for(const e of (await this.getState()).entries)if(e.google?.accountId===this.accountId&&(!e.seriesId||e.seriesEdited)){
+      this.ledger.links[e.id]={...(this.ledger.links[e.id]||{}),...clone(e.google),origin:e.origin||'hplan'};
+      // A restore performed before a delayed first-export deletion must cancel
+      // that pending deletion, rather than removing the live record again.
+      if(!e.deletedAt)this.ledger.links[e.id].pendingDelete=false;
+    }
     await this.persist();
     if(this.calendarIds.length&&typeof this.client.listCalendars==='function') {
       try{const list=await this.client.listCalendars();this.ledger.timeZones={...(this.ledger.timeZones||{})};for(const calendar of list.items)if(calendar.timeZone){this.ledger.timeZones[calendar.id]=calendar.timeZone;if(calendar.primary)this.ledger.timeZones.primary=calendar.timeZone;}}
@@ -158,7 +174,8 @@ class CalendarSync {
     if(this.tasks) {
       try {const lists=await this.client.listTaskLists();for(const list of lists.items)await this.service('tasks',list.id);}catch(e){this.error(e,'tasks');}
     }
-    this.result.lastSyncAt=new Date(this.now()).toISOString();this.ledger.lastSyncAt=this.result.lastSyncAt;await this.persist();
+    this.result.lastAttemptAt=new Date(this.now()).toISOString();this.ledger.lastAttemptAt=this.result.lastAttemptAt;
+    if(!this.result.errors.length){this.result.lastSyncAt=this.result.lastAttemptAt;this.ledger.lastSyncAt=this.result.lastSyncAt;}await this.persist();
     this.result.conflicts=(await this.getState()).entries.filter(e=>e.google?.accountId===this.accountId&&Object.keys(e.google.conflicts||{}).length).map(e=>({entryId:e.id,fields:clone(e.google.conflicts)}));
     return this.result;
   }
@@ -202,7 +219,9 @@ class CalendarSync {
         if(!inImportRange(imported,this.ledger.cutoff)&&(service!=='tasks'||(resource.updated||'').slice(0,10)<this.ledger.cutoff))continue;
         if(resource.recurringEventId){const master=entries.find(e=>e.google?.id===resource.recurringEventId&&e.google.accountId===this.accountId);if(master)imported.seriesId=master.id;}
         const duplicate=entries.find(e=>e.id===imported.id);
-        if(duplicate){if(duplicate.google&&duplicate.google.id!==resource.id)throw Error('같은 일정 식별자가 다른 Google 항목에 연결되어 있습니다.');await this.change(s=>{const e=s.entries.find(x=>x.id===duplicate.id);e.google=clone(imported.google);e.origin=e.origin||imported.origin;});}
+        if(duplicate){if(duplicate.google&&duplicate.google.id!==resource.id)throw Error('같은 일정 식별자가 다른 Google 항목에 연결되어 있습니다.');await this.change(s=>{const e=s.entries.find(x=>x.id===duplicate.id);e.google=clone(imported.google);e.origin=e.origin||imported.origin;
+          if(resource.recurringEventId){const master=s.entries.find(x=>x.id===imported.seriesId);if(master)e.google.base=occurrenceBase(master,{...e,originalDate:imported.originalDate},s.projects);e.seriesId=imported.seriesId;e.originalDate=imported.originalDate;e.seriesEdited=true;}
+        });}
         else {await this.change(s=>{s.entries.push(imported);});this.result.imported++;}
         this.ledger.links[imported.id]={...clone(imported.google),origin:imported.origin};
       }
@@ -224,8 +243,10 @@ class CalendarSync {
     }catch(e){this.error(e,service,container);}
   }
   async cancelOccurrence(resource,calendarId) {
-    const date=resource.originalStartTime?.date||resource.originalStartTime?.dateTime?.slice(0,10);if(!dateOK(date))return;
-    await this.change(s=>{const master=s.entries.find(e=>e.google?.accountId===this.accountId&&e.google.calendarId===calendarId&&e.google.id===resource.recurringEventId);if(master){if(s.entries.some(e=>e.seriesId===master.id&&(e.originalDate||e.date)===date&&e.calendarRestorePending))return;master.recurrenceExceptions=[...new Set([...(master.recurrenceExceptions||[]),date])];master.updatedAt=new Date(this.now()).toISOString();s.entries=s.entries.filter(e=>!(e.seriesId===master.id&&(e.originalDate||e.date)===date&&!e.seriesEdited));}});
+    await this.change(s=>{const master=s.entries.find(e=>e.google?.accountId===this.accountId&&e.google.calendarId===calendarId&&e.google.id===resource.recurringEventId);if(master){
+      const original=resource.originalStartTime,zone=master.timeZone||original?.timeZone||this.ledger.timeZones?.[calendarId]||'Asia/Seoul';
+      const date=original?.date||(original?.dateTime?wallParts(original.dateTime,zone).date:null);if(!dateOK(date))return;
+      if(s.entries.some(e=>e.seriesId===master.id&&(e.originalDate||e.date)===date&&e.calendarRestorePending))return;master.recurrenceExceptions=[...new Set([...(master.recurrenceExceptions||[]),date])];master.updatedAt=new Date(this.now()).toISOString();s.entries=s.entries.filter(e=>!(e.seriesId===master.id&&(e.originalDate||e.date)===date&&!e.seriesEdited));}});
   }
   async linkOccurrences(calendarId) {
     for(const occurrence of (await this.getState()).entries.filter(e=>e.seriesId&&e.seriesEdited&&!e.deletedAt)) {
@@ -237,7 +258,7 @@ class CalendarSync {
       const resource=instances.items.find(e=>(e.originalStartTime?.date||(e.originalStartTime?.dateTime?wallParts(e.originalStartTime.dateTime,zone).date:null))===date);
       if(!resource)throw Error('Google 반복 회차를 찾지 못했습니다. 원본 반복 일정은 유지했습니다.');
       if(resource.status==='cancelled')continue;
-      await this.change(s=>{const target=s.entries.find(e=>e.id===occurrence.id);if(target){target.google={service:'calendar',accountId:this.accountId,calendarId,id:resource.id,etag:resource.etag,base:eventProjection(resource),resource:clone(resource),originalDate:date,conflicts:{}};delete target.calendarRestorePending;}});
+      await this.change(s=>{const target=s.entries.find(e=>e.id===occurrence.id);if(target){target.google={service:'calendar',accountId:this.accountId,calendarId,id:resource.id,etag:resource.etag,base:occurrenceBase(master,{...target,originalDate:date},s.projects),resource:clone(resource),originalDate:date,conflicts:{}};delete target.calendarRestorePending;}});
     }
   }
   async reconcile(id,resource,retry=true) {
@@ -288,8 +309,10 @@ class CalendarSync {
   }
   async resolve(entryId,field,choice) {
     if(!['local','google'].includes(choice))throw Error('충돌 해결 방법을 확인해 주세요.');
-    return this.change(s=>{const e=s.entries.find(x=>x.id===entryId),conflict=e?.google?.conflicts?.[field];if(!conflict)throw Error('해결할 Google 충돌을 찾을 수 없습니다.');
-      writeProjection(e,{[field]:conflict[choice]},s.projects);e.google.base[field]=conflict.google;delete e.google.conflicts[field];e.updatedAt=new Date(this.now()).toISOString();},'google-calendar-resolve');
+    return this.change(s=>{const e=s.entries.find(x=>x.id===entryId);if(e?.google?.accountId!==this.accountId)throw Error('현재 연결된 Google 계정의 충돌만 해결할 수 있습니다.');
+      const conflict=Object.hasOwn(e.google.conflicts||{},field)?e.google.conflicts[field]:null;if(!conflict)throw Error('해결할 Google 충돌을 찾을 수 없습니다.');
+      const local=localProjection(e,s.projects);if(!Object.hasOwn(local,field))throw Error('지원하지 않는 Google 충돌 항목입니다.');
+      writeProjection(e,{[field]:choice==='local'?local[field]:conflict.google},s.projects);e.google.base[field]=conflict.google;delete e.google.conflicts[field];e.updatedAt=new Date(this.now()).toISOString();},'google-calendar-resolve');
   }
 }
 export {CalendarSync,entryToEvent,eventToEntry,taskToEntry,stableEventId,stableRemoteId,mergeFields};

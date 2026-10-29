@@ -45,7 +45,14 @@ function recurrenceDates(entry, through, from = entry.date) {
   if (!rule) return finish([entry.date]);
   const r = parseRule(rule), freq = r.FREQ, interval=+(r.INTERVAL||1), anchor=dateValue(entry.date);
   if (['HOURLY','MINUTELY','SECONDLY'].includes(freq)) return finish([entry.date]);
-  const until = r.UNTIL ? r.UNTIL.slice(0,4)+'-'+r.UNTIL.slice(4,6)+'-'+r.UNTIL.slice(6,8) : through;
+  let until=through,untilEpoch=null;
+  if(r.UNTIL){until=r.UNTIL.slice(0,4)+'-'+r.UNTIL.slice(4,6)+'-'+r.UNTIL.slice(6,8);
+    if(r.UNTIL.includes('T')){
+      const time=r.UNTIL.slice(9,11)+':'+r.UNTIL.slice(11,13),seconds=+r.UNTIL.slice(13,15);
+      untilEpoch=r.UNTIL.endsWith('Z')?Date.parse(until+'T'+time+':'+String(seconds).padStart(2,'0')+'Z'):zonedEpoch(until,time,entry.timeZone||'Asia/Seoul')+seconds*1000;
+      if(entry.allDay===false)until=dateInZone(untilEpoch,entry.timeZone||'Asia/Seoul');
+    }
+  }
   const end = [through,until,entry.recurrenceUntil||through].sort()[0];
   const result=[]; let count=0;
   const monthDays=(y,m)=>new Date(Date.UTC(y,m+1,0)).getUTCDate();
@@ -97,6 +104,7 @@ function recurrenceDates(entry, through, from = entry.date) {
     if(r.BYSETPOS) candidates=r.BYSETPOS.split(',').map(Number).map(p=>candidates[p>0?p-1:candidates.length+p]).filter(Boolean).sort();
     for(const date of [...new Set(candidates)]) {
       if(date<entry.date||date>end)continue;
+      if(untilEpoch!==null&&entry.allDay===false){try{if(zonedEpoch(date,entry.startTime||'00:00',entry.timeZone||'Asia/Seoul')>untilEpoch)continue;}catch{continue;}}
       if(++count>+(r.COUNT||1000000))return finish(result);
       if(date>=from&&!exceptions.has(date))result.push(date);
     }
@@ -120,7 +128,8 @@ function zonedEpoch(date,time='09:00',timeZone='Asia/Seoul') {
 }
 function expandEntries(entries, from, to) {
   const out=[],overrides=new Map();
-  for(const e of entries)if(e.seriesId)overrides.set(e.seriesId+':'+(e.originalDate||e.google?.originalDate||e.date),e);
+  const occurrenceKey=e=>e.seriesId+':'+(e.originalDate||e.google?.originalDate||e.date);
+  for(const e of entries)if(e.seriesId){const key=occurrenceKey(e),previous=overrides.get(key);if(!previous||!previous.seriesEdited||e.seriesEdited)overrides.set(key,e);}
   for(const e of entries) {
     if(e.seriesId)continue;
     if(isRecurring(e)) {
@@ -131,7 +140,10 @@ function expandEntries(entries, from, to) {
       }
     } else out.push(e);
   }
-  for(const e of entries)if(e.seriesId&&!out.some(x=>x.id===e.id))out.push(e);
+  // Edited Google instances may have a different ID from a previously
+  // materialized scaffold. Never re-add that stale scaffold after replacing it.
+  // Distinct edited records remain visible so this view cannot discard user text.
+  for(const e of entries)if(e.seriesId&&(overrides.get(occurrenceKey(e))===e||e.seriesEdited)&&!out.some(x=>x.id===e.id))out.push(e);
   return out.filter(e=>!e.deletedAt&&e.date<=to&&(e.endDate||e.date)>=from).sort((a,b)=>a.date.localeCompare(b.date)||String(a.startTime||'').localeCompare(String(b.startTime||''))||a.id.localeCompare(b.id));
 }
 export {parseRule,recurrenceDates,shiftDate,dateInZone,zonedEpoch,expandEntries,recurrenceDateValues,isRecurring};

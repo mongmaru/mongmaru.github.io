@@ -1203,6 +1203,16 @@ textarea {
 .google-services .row { flex-wrap: wrap; }
 .google-services .setting-row { flex-wrap: wrap; gap: 12px; }
 .google-services p,.notification-preview { overflow-wrap: anywhere; }
+.google-feature { min-width: 0; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.google-feature:first-of-type { padding-top: 0; }
+.google-feature .setting-row > div { flex: 1 1 180px; min-width: 0; }
+.google-feature .help { margin: 6px 0 12px; }
+.google-feature .row > button { white-space: normal; overflow-wrap: anywhere; }
+.connection-state { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; font-size: 12px; line-height: 1.5; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.connection-state::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
+.connection-state.connected::before { background: var(--ink); }
+.connection-state.error,.connection-state.permission { color: var(--red); }
+.connection-state.error::before,.connection-state.permission::before,.connection-state.syncing::before { background: var(--red); }
 @media (max-width: 430px) {
   .top-actions #save-state {
     display: none;

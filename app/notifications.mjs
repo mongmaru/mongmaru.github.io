@@ -17,12 +17,12 @@ export class AppNotifications {
  async upload(force=false){
   this.refreshAcknowledgments();
   const auth=this.getAuth();if(!this.enabled||!auth.connected||!auth.request||Notification.permission!=='granted')return;
-  if(this.getNative()?.nativeNotificationsEnabled){await auth.request('/v1/push',auth.credential,{method:'DELETE'});return;}
+  if(this.getNative()?.nativeNotificationsEnabled){await auth.request('/v1/push',auth.credential,{method:'DELETE'});this.uploaded=null;return;}
   const registration=await navigator.serviceWorker.ready;
   let subscription=await registration.pushManager.getSubscription();
   if(!subscription){if(!force)return;const key=await auth.request('/v1/push',auth.credential);if(!key.ready)throw Error('웹 알림 서버 설정을 확인해 주세요.');const bytes=Uint8Array.from(atob(key.publicKey.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});}
   const now=Date.now(),jobs=notificationSchedule(this.getState().entries,{from:new Date(now),to:new Date(now+365*86400000),ledger:this.ledger});
-  const signature=JSON.stringify(jobs);if(!force&&signature===this.uploaded)return;
+  const signature=JSON.stringify([auth.account?.sub||'',auth.credential?.secret||'',subscription.endpoint,jobs]);if(!force&&signature===this.uploaded)return;
   await auth.request('/v1/push',auth.credential,{method:'POST',body:{subscription:subscription.toJSON(),jobs}});this.uploaded=signature;
  }
  async tick(){

@@ -9,6 +9,7 @@ import { CalendarIntegration } from './calendar-integration.mjs';
 import { NativeBridge } from './native-bridge.mjs';
 import { AppNotifications } from './notifications.mjs';
 import { googlePanel } from './google-ui.mjs';
+import {permissionState} from './google-permissions.mjs';
 import { expandEntries } from './core/calendar-recurrence.mjs';
 import {
   GOOGLE_WEB_CLIENT_ID,
@@ -211,7 +212,7 @@ async function action(a, message, baseline = null) {
 }
 function scheduleSync() {
   clearTimeout(syncTimer);
-  if (sync && !sync.stopped) syncTimer = setTimeout(() => autoSync(), 2000);
+  if (authConnected() || sync && !sync.stopped) syncTimer = setTimeout(() => autoSync(), 2000);
 }
 function applySettings() {
   const s = state().settings,
@@ -439,10 +440,10 @@ function overview() {
     )}<button data-action="planner-filter">${icon("filter")} 필터</button></div>${selectedBar()}<p class="section-title">${esc(names[overviewFilter] || "기록")} · ${list.length}개</p><div class="agenda">${agenda(list, { showDate: true })}</div>`;
 }
 function driveCard() {
-  const connected = authConnected(),
+  const connected = authConnected() && permissionState(auth).drive,
     status = sync?.status(),
     account = repo.record.activeAccount;
-  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google 연동 · Drive</h2><p class="account">${connected ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button("Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
+  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google 연동 · Drive</h2><p class="account">${authConnected() ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${authConnected()&&!connected?'<p class="help">Drive 추가 권한이 필요합니다. 다른 Google 기능은 각각의 연결 상태를 따릅니다.</p>':''}${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button(authConnected()?"Drive 권한 연결":"Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
 }
 function settings() {
   const s = state().settings,
@@ -472,7 +473,7 @@ function settings() {
     .join(
       "",
     )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`;
-  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge));
+  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge,auth,{connecting}));
 }
 function renderNotice() {
   const n = $("#notice");
@@ -726,6 +727,7 @@ async function attachDrive(nextAuth, account, attempt) {
   if (!nextAuth.requiresReauth) await nextAuth.commit?.();
   if (attempt !== connectionGeneration) return;
   auth = nextAuth;
+  if(!permissionState(nextAuth).drive){sync=null;render();return;}
   const controller = new SyncController({
     repo,
     account: account.sub,
@@ -754,6 +756,7 @@ async function restoreDrive() {
     !AUTH_SERVER_URL ||
     connecting ||
     disconnecting ||
+    authConnected() ||
     (sync && !sync.stopped)
   )
     return;
@@ -777,13 +780,18 @@ async function restoreDrive() {
 }
 async function autoSync() {
   try {
-    if (!sync || sync.stopped) {
+    if (!authConnected() && (!sync || sync.stopped)) {
       await restoreDrive();
-      return;
     }
-    if (sync && !sync.stopped) {
-      await runSync(false, true);
-      if(!modal.open)await calendar?.run();
+    if(authConnected()){
+      // Refresh remembered grants before deciding which service can run. Older
+      // device sessions may not contain a cached scope list; never infer consent.
+      const session=auth,generation=connectionGeneration;
+      await session.token();
+      if(session!==auth||generation!==connectionGeneration)return;
+      if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
+      if(sync&&!sync.stopped)try{await runSync(false, true);}catch{}
+      if(!modal.open)try{await calendar?.run();}catch{}
       await notifications?.upload();
     }
   } catch {} // A remembered connection and local edits survive transient errors.
@@ -797,6 +805,7 @@ async function connectDrive(features = {}) {
     return;
   }
   connecting = true;
+  if(!modal.open)render();
   const attempt = ++connectionGeneration,
     nextAuth = createAuth();
   pendingAuth = nextAuth;
@@ -818,11 +827,15 @@ async function connectDrive(features = {}) {
     }
     await attachDrive(nextAuth, account, attempt);
     channel?.postMessage({ type: "auth-change" });
-    if(features.calendar)await calendar.configure({enabled:true,tasks:!!features.tasks});
+    const permissions=permissionState(nextAuth),changes={};
+    if(features.calendar&&permissions.calendar)changes.enabled=true;
+    if(features.tasks&&permissions.tasks)changes.tasks=true;
+    if(Object.keys(changes).length)await calendar.configure(changes);
+    if(features.calendar&&!permissions.calendar||features.tasks&&!permissions.tasks)toast('계정은 연결했습니다. 허용하지 않은 추가 기능은 켜지 않습니다.');
     render();
   } finally {
     if (pendingAuth === nextAuth) pendingAuth = null;
-    if (attempt === connectionGeneration) connecting = false;
+    if (attempt === connectionGeneration) {connecting = false;if(!modal.open)render();}
   }
 }
 function conflicts() {
@@ -842,23 +855,37 @@ function conflicts() {
         : '<p class="empty">확인할 충돌이 없습니다.</p>',
   );
 }
+function googlePermissionPrompt(feature){
+ const label=feature==='tasks'?'Google 할 일':'Google Calendar';
+ modalOpen(label+' 연결',`<div class="stack"><p>${label}에 필요한 추가 권한만 요청합니다. 기존 Drive와 이 기기의 기록은 유지합니다.</p><div class="notice-box"><strong>Google 검증 안내</strong><p>Google의 앱 검증이 끝나기 전에는 별도의 경고가 표시될 수 있습니다. Google이 관리하는 화면이며 H.PLAN에서 숨기거나 자동 승인하지 않습니다.</p></div><p class="help">승인을 취소하면 이 기능은 켜지지 않습니다. 기기에서 작성한 기록은 계속 사용할 수 있습니다.</p>${button('Google에서 권한 확인',`google-authorize:${feature}`,'primary')}${button('연결 도움말','google-help')}</div>`);
+}
+async function manageGoogleFeature(feature){
+ const label=feature==='tasks'?'Google 할 일':'Google Calendar',permissions=permissionState(auth),options=calendar.options();
+ if(!authConnected()||!permissions[feature])return googlePermissionPrompt(feature);
+ if(feature==='tasks')return modalOpen(label+' 설정',`<div class="stack">${checkbox('Google 할 일 동기화 사용','tasksEnabled',options.tasks)}<p class="help">날짜가 있는 할 일의 제목·메모·완료 상태를 연결합니다. Calendar 연결과 별도로 켜거나 끌 수 있습니다.</p>${button('권한 다시 연결','google-permission:tasks')}</div>`,async()=>{const value=new FormData(form).has('tasksEnabled');await calendar.configure({tasks:value});closeModal(true);if(value)await syncGoogleFeature('tasks');});
+ let list;try{list=await calendar.calendars();}catch(e){return modalOpen(label+' 연결 확인',`<div class="stack"><p class="notice-box">${esc(e.message)}</p><p class="help">목록을 읽지 못했습니다. 기존 연결 설정과 기록은 유지합니다.</p>${button('다시 시도','calendar-manage','primary')}${button('권한 다시 연결','google-permission:calendar')}${button('연결 도움말','google-help')}</div>`);}
+ return modalOpen(label+' 설정',`<div class="stack">${checkbox('Calendar 양방향 동기화 사용','calendarEnabled',options.enabled)}<p class="help">처음 연결한 달 1일부터 가져옵니다. H.PLAN에서 만든 일정은 첫 번째로 선택한 캘린더에 보냅니다.</p>${list.length?list.map(c=>checkbox(c.summary||c.id,'calendar:'+c.id,(options.calendarIds||['primary']).includes(c.id)||c.primary&&(options.calendarIds||[]).includes('primary'))).join(''):'<p class="notice-box">수정 가능한 캘린더가 없습니다.</p>'}<p class="help">Google 원본은 양쪽에서 바로 삭제하며 H.PLAN 원본은 H.PLAN 휴지통으로 보냅니다.</p>${button('권한 다시 연결','google-permission:calendar')}</div>`,async()=>{const f=new FormData(form),enabled=f.has('calendarEnabled'),ids=list.filter(c=>f.has('calendar:'+c.id)).map(c=>c.id);if(enabled&&!ids.length)throw Error('캘린더를 하나 이상 선택해 주세요.');await calendar.configure({enabled,calendarIds:ids});closeModal(true);if(enabled)await syncGoogleFeature('calendar');});
+}
+async function syncGoogleFeature(feature){
+ if(!permissionState(auth)[feature]||!(feature==='calendar'?calendar.options().enabled:calendar.options().tasks))return manageGoogleFeature(feature);
+ const result=await calendar.run();scheduleSync();const service=calendar.status.services[feature];
+ if(service.code==='error')return toast(service.error||'동기화가 끝나지 않았습니다. 연결 상태를 확인해 주세요.');
+ if(result&&service.code==='connected')toast('동기화를 완료했습니다.');
+}
 async function handle(a) {
   const pos = a.indexOf(":"),
     op = pos < 0 ? a : a.slice(0, pos),
     arg = pos < 0 ? "" : a.slice(pos + 1);
   switch (op) {
     case 'native-settings':nativeBridge.send({type:'hplan.native.settings'});return;
-    case 'calendar-manage': {
-      if(!authConnected())return connectDrive({calendar:true,tasks:true});
-      let options=[];
-      try{options=await calendar.calendars();}catch(e){
-        modalOpen('Google Calendar 연결',`<p>${esc(e.message)}</p><p class="help">기존 Drive 연결은 유지됩니다. 추가 권한을 허용한 뒤 Calendar API와 Tasks API를 사용합니다.</p>${button('Calendar·할 일 권한 연결','calendar-authorize','primary')}`);return;
-      }
-      const s=calendar.options();
-      return modalOpen('Google 연동 설정',`<div class="stack">${checkbox('Calendar 양방향 동기화','calendarEnabled',s.enabled)}${checkbox('Google 할 일도 가져오기','tasksEnabled',s.tasks)}<p class="help">H.PLAN에서 만든 일정은 선택한 첫 번째 캘린더로 보냅니다. 처음 연결한 달 1일부터 가져오며, 이후에도 이 기준은 유지합니다.</p>${options.map(c=>checkbox(c.summary||c.id,'calendar:'+c.id,(s.calendarIds||['primary']).includes(c.id)||c.primary&&(s.calendarIds||[]).includes('primary'))).join('')}<p class="help">일정 출처에 따라 삭제가 연결됩니다. Google 원본은 바로 삭제하며, H.PLAN 원본은 H.PLAN 휴지통으로 보냅니다.</p>${button('권한 다시 연결','calendar-authorize')}</div>`,async()=>{const f=new FormData(form),ids=options.filter(c=>f.has('calendar:'+c.id)).map(c=>c.id);if(f.has('calendarEnabled')&&!ids.length)throw Error('캘린더를 하나 이상 선택해 주세요.');await calendar.configure({enabled:f.has('calendarEnabled'),tasks:f.has('tasksEnabled'),calendarIds:ids});closeModal(true);await autoSync();});
-    }
-    case 'calendar-authorize':closeModal(true);return connectDrive({calendar:true,tasks:true});
-    case 'calendar-sync':closeModal(true);if(!calendar.options().enabled)return handle('calendar-manage');await calendar.run();scheduleSync();return toast('Calendar 동기화를 확인했습니다.');
+    case 'calendar-manage':return manageGoogleFeature('calendar');
+    case 'tasks-manage':return manageGoogleFeature('tasks');
+    case 'google-permission':return googlePermissionPrompt(arg==='tasks'?'tasks':'calendar');
+    case 'calendar-authorize':return googlePermissionPrompt('calendar');
+    case 'google-authorize':closeModal(true);return connectDrive(arg==='tasks'?{tasks:true}:{calendar:true});
+    case 'calendar-sync':closeModal(true);return syncGoogleFeature('calendar');
+    case 'tasks-sync':closeModal(true);return syncGoogleFeature('tasks');
+    case 'google-help':return modalOpen('Google 연결 도움말','<div class="stack"><p>Drive·Calendar·Google 할 일은 필요한 기능만 따로 연결합니다. 연결을 취소하거나 권한을 허용하지 않아도 기기 기록은 지워지지 않습니다.</p><p>“Google에서 확인하지 않은 앱”은 Google의 브랜드·데이터 접근 검증 상태를 알리는 화면입니다. 앱에서 이 경고를 제거하거나 자동으로 통과시킬 수 없습니다. 개발자가 Google 검증을 완료해야 합니다.</p><p>계속 경고가 나오면 Google 창을 닫고 이 화면으로 돌아와 주세요. 기존 계정의 Drive 동기화와 로컬 기록은 유지합니다.</p><p>앱을 업데이트하려면 현재 입력을 저장한 뒤 업데이트 안내를 눌러 주세요. 브라우저 저장 데이터를 지울 필요는 없습니다.</p><p class="help">연결 오류는 해당 기능 카드에 표시하며 마지막 성공 시각을 별도로 보존합니다.</p></div>');
     case 'calendar-conflicts': {
       const entries=calendar.status.conflicts;
       return modalOpen('Calendar 수정 충돌',entries.length?`<div class="stack">${entries.map(e=>`<section class="panel"><h3>${esc(e.text)}</h3>${Object.entries(e.google.conflicts).map(([key,v])=>`<div class="summary"><strong>${esc(key)}</strong><p>H.PLAN: ${esc(JSON.stringify(v.local))}</p><p>Google: ${esc(JSON.stringify(v.google??v.remote))}</p><div class="row">${button('H.PLAN 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'local']))}`)}${button('Google 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'google']))}`)}</div></div>`).join('')}</section>`).join('')}</div>`:'<p>확인할 수정 충돌이 없습니다.</p>');
