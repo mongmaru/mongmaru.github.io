@@ -198,12 +198,17 @@ class CalendarSync {
       for(const [id,link]of Object.entries(this.ledger.links))if(this.selected(link,service,container)&&(!current.entries.some(e=>e.id===id)||link.pendingDelete)) {
         await this.removeRemote(link);link.deleted=true;link.pendingDelete=false;await this.persist();
       }
-      let listing;
+      let listing,cursor,cachedResources={};
       if(service==='calendar') {
-        let cursor=this.ledger.calendars[container]?.syncToken;
+        const checkpoint=this.ledger.calendars[container];cursor=checkpoint?.syncToken;
+        // Only this device's API observations paired with its cursor are trusted.
+        // entry.google/links can be replaced by an older Drive snapshot.
+        if(cursor)cachedResources=checkpoint.resources||{};
         try{listing=await this.client.listEvents(container,{syncToken:cursor});}catch(e){if(e.status!==410)throw e;cursor=null;listing=await this.client.listEvents(container,{});}
       } else listing=await this.client.listTasks(container);
-      const resources=new Map(listing.items.map(r=>[r.id,r]));
+      const resources=new Map(service==='calendar'&&cursor?Object.entries(cachedResources):[]);
+      const listedIds=new Set(listing.items.map(resource=>resource.id));
+      for(const resource of listing.items)resources.set(resource.id,resource);
       if(service==='calendar')await this.linkOccurrences(container);
       // Masters first, then moved/cancelled recurrence exceptions.
       for(const resource of [...listing.items].sort((a,b)=>Number(!!a.recurringEventId)-Number(!!b.recurringEventId))) {
@@ -229,15 +234,25 @@ class CalendarSync {
       for(const entry of linked) {
         try {
           let resource=resources.get(entry.google.id);
+          // ETags are opaque: an observation merged from Drive may be either
+          // older or newer than this cursor's cached view. Confirm only that
+          // changed link instead of guessing which device observed it last.
+          if(service==='calendar'&&resource&&!listedIds.has(entry.google.id)&&!same(resource,entry.google.resource))resource=null;
           if(!resource)try{resource=await this.remote(entry.google);}catch(e){if(e.status===404||e.status===410)resource={id:entry.google.id,status:'cancelled',deleted:true};else throw e;}
-          await this.reconcile(entry.id,resource);
+          const synced=await this.reconcile(entry.id,resource);
+          if(service==='calendar')resources.set(entry.google.id,synced||resource);
         }catch(e){this.error(e,service,entry.id);}
       }
       if(service==='calendar') {
         // Calendar is the sole export destination for H.PLAN-created entries.
         const unlinked=(await this.getState()).entries.filter(e=>!e.deletedAt&&!e.google&&(!e.origin||e.origin==='hplan'||e.calendarTarget?.accountId===this.accountId)&&!e.seriesId&&(e.calendarTarget?.calendarId||this.calendarIds[0])===container);
         for(const entry of unlinked)try{await this.insert(entry.id,container);}catch(e){this.error(e,service,entry.id);}
-        if(listing.nextSyncToken)this.ledger.calendars[container]={syncToken:listing.nextSyncToken};
+        if(listing.nextSyncToken) {
+          // Retain only observed resources belonging to linked records, keeping
+          // historical items outside the import window out of the local cache.
+          const ids=new Set(Object.values(this.ledger.links).filter(link=>this.selected(link,service,container)).map(link=>link.id));
+          this.ledger.calendars[container]={syncToken:listing.nextSyncToken,resources:Object.fromEntries([...resources].filter(([id])=>ids.has(id)))};
+        }
       }
       await this.persist();
     }catch(e){this.error(e,service,container);}
@@ -264,7 +279,7 @@ class CalendarSync {
   async reconcile(id,resource,retry=true) {
     this.guard();const state=await this.getState(),e=state.entries.find(x=>x.id===id);if(!e)return;
     const link=e.google,deleted=resource.status==='cancelled'||resource.deleted;
-    if(e.deletedAt){await this.removeRemote(link);await this.change(s=>{const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return;}
+    if(e.deletedAt){await this.removeRemote(link);await this.change(s=>{const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return {id:link.id,status:'cancelled',deleted:true};}
     if(deleted) {
       if(e.origin==='hplan'&&link.deleted){await this.insert(id,link.calendarId,(link.generation||0)+1);return;}
       await this.change(s=>{apply(s,{type:'entry.delete',ids:[id],scope:!e.seriesId&&isRecurring(e)?'all':undefined,occurrenceDate:e.date});const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return;
@@ -293,6 +308,7 @@ class CalendarSync {
       if(!same(e,target))target.updatedAt=at;
     });
     const latest=(await this.getState()).entries.find(x=>x.id===id);if(latest)this.ledger.links[id]={...clone(latest.google),origin:latest.origin};
+    return synced;
   }
   async insert(id,calendarId,generation=0) {
     this.guard();const state=await this.getState(),e=state.entries.find(x=>x.id===id);if(!e||e.deletedAt)return;

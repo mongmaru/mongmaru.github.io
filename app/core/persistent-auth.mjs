@@ -132,6 +132,8 @@ export class PersistentAuth {
       if (generation !== this.generation) throw cancelled();
       if (data.pending?.secret === credential.secret)
         data.pending = { ...credential };
+      if (data.active?.secret === credential.secret)
+        data.active = {...data.active,account:credential.account,scopes:credential.scopes,reauth:false};
       return data;
     });
     if (generation !== this.generation) throw cancelled();

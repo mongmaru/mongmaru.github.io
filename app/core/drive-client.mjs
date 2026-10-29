@@ -18,16 +18,21 @@ class DriveClient {
     this.token = token;
     this.fetch = fetch.bind(globalThis);
     this.sleep = sleep;
+    // Only this account-bound client holds downloaded snapshots. Metadata is
+    // still listed on every run so new devices, edits and deletions are seen.
+    this.snapshots = new Map();
   }
   async request(url, options = {}) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let refreshed=false,forceToken=false;
+    for (let attempt = 0; attempt < 4; attempt++) {
       let res;
       try {
+        const accessToken=await this.token(forceToken);forceToken=false;
         res = await this.fetch(url, {
           ...options,
           headers: {
             ...options.headers,
-            Authorization: `Bearer ${await this.token()}`,
+            Authorization: `Bearer ${accessToken}`,
           },
           signal: AbortSignal.timeout(45000),
           redirect: options.redirect || "error",
@@ -53,6 +58,7 @@ class DriveClient {
         continue;
       }
       if (res.status === 401) {
+        if(!refreshed){refreshed=true;forceToken=true;continue;}
         const e = Error(
           "Google 로그인이 만료되었습니다. Google Drive를 다시 연결해 주세요.",
         );
@@ -85,7 +91,7 @@ class DriveClient {
       const params = new URLSearchParams({
         q: `trashed = false and (${query})`,
         fields:
-          "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,size,appProperties,parents)",
+          "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,version,size,appProperties,parents)",
         pageSize: "1000",
         spaces: "drive",
       });
@@ -193,19 +199,24 @@ class DriveClient {
         )),
       );
     const snapshots = [];
+    const present = new Set(files.map(f => f.id));
+    for (const id of this.snapshots.keys()) if (!present.has(id)) this.snapshots.delete(id);
     for (const f of files) {
       if (Number(f.size) > MAX_BYTES)
         throw Error("동기화 데이터가 너무 큽니다.");
-      snapshots.push({
-        id: f.id,
-        name: f.name,
-        data: await this.download(f.id),
-      });
+      const revision = typeof f.version === 'string' && f.version && typeof f.modifiedTime === 'string' && f.modifiedTime
+        ? JSON.stringify([f.version,f.modifiedTime]) : null;
+      const cached = this.snapshots.get(f.id);
+      const data = revision && cached?.revision === revision ? cached.data : await this.download(f.id);
+      if (revision) this.snapshots.set(f.id,{revision,data:structuredClone(data)});
+      else this.snapshots.delete(f.id);
+      snapshots.push({id:f.id,name:f.name,data:structuredClone(data)});
     }
     return snapshots;
   }
   async writeSnapshot(layout, graph, files) {
     const own = files.find((f) => f.data.deviceId === graph.deviceId);
+    if (own) this.snapshots.delete(own.id);
     return this.upload(
       layout.sync,
       `${graph.deviceId}.json`,

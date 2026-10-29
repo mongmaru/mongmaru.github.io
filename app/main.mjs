@@ -212,7 +212,7 @@ async function action(a, message, baseline = null) {
 }
 function scheduleSync() {
   clearTimeout(syncTimer);
-  if (authConnected() || sync && !sync.stopped) syncTimer = setTimeout(() => autoSync(), 2000);
+  if (authConnected() || sync && !sync.stopped) syncTimer = setTimeout(() => autoSync('local'), 2000);
 }
 function applySettings() {
   const s = state().settings,
@@ -732,14 +732,14 @@ async function attachDrive(nextAuth, account, attempt) {
     repo,
     account: account.sub,
     client: new DriveClient({
-      token: () => {
+      token: (force=false) => {
         if (
           controller.stopped ||
           auth !== nextAuth ||
           repo.record.activeAccount !== account.sub
         )
           throw Error("Google 연결이 변경되어 이전 요청을 중지했습니다.");
-        return nextAuth.token();
+        return nextAuth.token(force);
       },
     }),
     onStatus: () => {
@@ -778,7 +778,8 @@ async function restoreDrive() {
   });
   return restoring;
 }
-async function autoSync() {
+let lastDriveAttempt=0;
+async function autoSync(reason='foreground') {
   try {
     if (!authConnected() && (!sync || sync.stopped)) {
       await restoreDrive();
@@ -790,9 +791,10 @@ async function autoSync() {
       await session.token();
       if(session!==auth||generation!==connectionGeneration)return;
       if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
-      if(sync&&!sync.stopped)try{await runSync(false, true);}catch{}
-      if(!modal.open)try{await calendar?.run();}catch{}
+      if(sync&&!sync.stopped&&(reason!=='idle'||Date.now()-lastDriveAttempt>=60000)){lastDriveAttempt=Date.now();try{await runSync(false, true);}catch{}}
+      if(!modal.open)try{await calendar?.run({reason});}catch{}
       await notifications?.upload();
+      const services=calendar?.status.services||{};if(Object.values(services).some(s=>s.code==='error'))$('#save-state').textContent='일부 연동 확인 필요';
     }
   } catch {} // A remembered connection and local edits survive transient errors.
 }
@@ -1565,7 +1567,7 @@ window.addEventListener("pageshow", () => {
   if (repo && !modal.open) autoSync();
 });
 setInterval(() => {
-  if (!document.hidden && !modal.open) autoSync();
+  if (!document.hidden && !modal.open) autoSync('idle');
 }, 60000);
 try {
   repo = await Repository.open(await IndexedStore.open());
@@ -1574,7 +1576,7 @@ try {
   nativeBridge=new NativeBridge({getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:id=>notifications.acknowledge(id),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
   const launch=new URLSearchParams(location.search);
   if(dateOK(launch.get('date')))date=launch.get('date');
-  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId).catch(()=>{});});
+  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt).catch(()=>{});});
   repo.subscribe(() => {
     nativeBridge?.update();
     if (!modal.open) render();
