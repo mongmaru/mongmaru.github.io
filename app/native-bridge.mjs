@@ -16,7 +16,7 @@ export class NativeBridge {
   const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);
  }
  receive(event) {
-  if(event.origin!==ORIGIN||location.origin!==ORIGIN)return;
+  if(location.origin!==ORIGIN||![ORIGIN,'android-app://mongmaru.github.io/com.hplan.app','android-app://mongmaru.github.io'].includes(event.origin))return;
   let data=event.data;const bootstrap=data==='';try{if(typeof data==='string'&&!bootstrap)data=JSON.parse(data);}catch{return;}
   if(!bootstrap&&(data?.type!=='hplan.native.ready'||data.version!==1||typeof data.nonce!=='string'||data.nonce.length<16||data.nonce.length>200)||!event.ports?.[0])return;
   clearTimeout(this.ackTimer);this.port?.close();this.port=event.ports[0];this.nonce=bootstrap?null:data.nonce;this.lastInput=null;this.pendingSnapshot=null;

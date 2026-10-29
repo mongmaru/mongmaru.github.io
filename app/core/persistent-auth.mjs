@@ -49,7 +49,9 @@ export class PersistentAuth {
     this.flushRevocations().catch(() => {});
   }
   async request(path, credential, { method = "GET", body: requestBody } = {}, retried=false) {
-    let res;
+    const generation=this.generation,safeRead=method==='GET'||path==='/v1/google'&&(requestBody?.method||'GET')==='GET';
+    const retry=async()=>{await this.sleep(250);if(generation!==this.generation)throw cancelled();return this.request(path,credential,{method,body:requestBody},true);};
+    let res,body;
     try {
       res = await this.fetch(credential.server + path, {
         method,
@@ -63,8 +65,9 @@ export class PersistentAuth {
         redirect: "error",
         signal: AbortSignal.timeout(25000),
       });
+      try{body=await res.json();}catch(failure){if(/Timeout|Abort|TypeError/.test(failure.name||''))throw failure;body={};}
     } catch (failure) {
-      if(!retried&&!/Timeout|Abort/.test(failure.name||'')&&(method==='GET'||path==='/v1/google'&&(requestBody?.method||'GET')==='GET')){await this.sleep(250);return this.request(path,credential,{method,body:requestBody},true);}
+      if(!retried&&safeRead)return retry();
       const stage=path.startsWith('/v1/session')?'계정 확인':path==='/v1/google'?'Google 대체 통신':'알림 연결',reason=/Timeout|Abort/.test(failure.name||'')?'시간 초과':'네트워크';
       throw Object.assign(
         Error(
@@ -73,11 +76,11 @@ export class PersistentAuth {
         { code: "TEMPORARY" },
       );
     }
-    const body = await res.json().catch(() => ({}));
+    if(!res.ok&&!retried&&safeRead&&(body.code||'TEMPORARY')==='TEMPORARY'&&[408,429,500,502,503,504].includes(res.status))return retry();
     if (!res.ok)
       throw Object.assign(
         Error(body.message || "자동 연결 서버에 잠시 연결하지 못했습니다."),
-        { code: body.code || "TEMPORARY" },
+        { code: body.code || "TEMPORARY",status:res.status },
       );
     return body;
   }

@@ -228,6 +228,28 @@ function applySettings() {
   document.body.classList.toggle("dense", s.density === "compact");
   document.documentElement.style.setProperty("--text", `${s.fontSize + 2}px`);
 }
+let lastMainHTML, pendingMainHTML, mainPointer = null;
+main.addEventListener('pointerdown', event => { mainPointer = event.pointerId; }, true);
+function releaseMainPointer(event) {
+  if (event.type !== 'blur' && event.pointerId !== mainPointer) return;
+  // Click follows pointerup. Let its original target finish before refreshing.
+  setTimeout(() => {
+    mainPointer = null;
+    if (pendingMainHTML !== undefined && !modal.open) setMainHTML(pendingMainHTML);
+  }, 0);
+}
+window.addEventListener('pointerup', releaseMainPointer, true);
+window.addEventListener('pointercancel', releaseMainPointer, true);
+window.addEventListener('blur', releaseMainPointer);
+function setMainHTML(html) {
+  // Cursor, ETag and sync timestamps do not change the displayed planner.
+  // Keep live buttons/inputs when the resulting view is unchanged.
+  if (mainPointer !== null) { pendingMainHTML = html; return; }
+  pendingMainHTML = undefined;
+  if (html === lastMainHTML) return;
+  main.innerHTML = html;
+  lastMainHTML = html;
+}
 function render() {
   if (!repo) return;
   applySettings();
@@ -334,7 +356,7 @@ function planner() {
       (!projectFilter || e.projectId === projectFilter) &&
       (!statusFilter || e.status === statusFilter),
   );
-  main.innerHTML = `<div class="heading-row"><div><p class="eyebrow">MY DAY, MY PLAN</p><h1>${year}년 ${month + 1}월</h1><p>기록은 가볍게, 하루는 차분하게.</p></div>${button("추가", "entry-new", "primary", "plus")}</div><div class="planner-layout"><section class="panel calendar-panel" aria-label="달력"><div class="calendar-head"><div class="row"><button class="icon-button ghost" aria-label="이전 기간" data-action="period:-1">${icon("left")}</button><strong>${calendarMode === "year" ? year + "년" : month + 1 + "월"}</strong><button class="icon-button ghost" aria-label="다음 기간" data-action="period:1">${icon("right")}</button></div>${button("오늘", "today", "ghost")}</div><div class="toolbar"><div class="segmented" aria-label="달력 보기">${[
+  setMainHTML(`<div class="heading-row"><div><p class="eyebrow">MY DAY, MY PLAN</p><h1>${year}년 ${month + 1}월</h1><p>기록은 가볍게, 하루는 차분하게.</p></div>${button("추가", "entry-new", "primary", "plus")}</div><div class="planner-layout"><section class="panel calendar-panel" aria-label="달력"><div class="calendar-head"><div class="row"><button class="icon-button ghost" aria-label="이전 기간" data-action="period:-1">${icon("left")}</button><strong>${calendarMode === "year" ? year + "년" : month + 1 + "월"}</strong><button class="icon-button ghost" aria-label="다음 기간" data-action="period:1">${icon("right")}</button></div>${button("오늘", "today", "ghost")}</div><div class="toolbar"><div class="segmented" aria-label="달력 보기">${[
     ["month", "월"],
     ["week", "주"],
     ["year", "년"],
@@ -345,7 +367,7 @@ function planner() {
     )
     .join(
       "",
-    )}</div><input type="date" aria-label="날짜 바로 선택" id="jump-date" value="${date}" style="flex:1;width:120px;padding:7px;font-size:14px"></div>${calendar}</section><section class="day-panel"><div class="day-header"><div class="view-title"><h2>${niceDate(date)}</h2><span class="count">${entries.length}</span></div><button class="icon-button ghost" aria-label="일정 필터" data-action="planner-filter">${icon("filter")}</button></div><div class="chips">${[["all", "전체"], ...Object.entries(kindLabels)].map(([id, label]) => `<button class="${kind === id ? "active" : ""}" data-action="kind:${id}">${label}</button>`).join("")}${button("날짜·복사·양식", "day-tools")}</div>${selectedBar()}<div class="agenda">${agenda(entries)}</div></section></div>`;
+    )}</div><input type="date" aria-label="날짜 바로 선택" id="jump-date" value="${date}" style="flex:1;width:120px;padding:7px;font-size:14px"></div>${calendar}</section><section class="day-panel"><div class="day-header"><div class="view-title"><h2>${niceDate(date)}</h2><span class="count">${entries.length}</span></div><button class="icon-button ghost" aria-label="일정 필터" data-action="planner-filter">${icon("filter")}</button></div><div class="chips">${[["all", "전체"], ...Object.entries(kindLabels)].map(([id, label]) => `<button class="${kind === id ? "active" : ""}" data-action="kind:${id}">${label}</button>`).join("")}${button("날짜·복사·양식", "day-tools")}</div>${selectedBar()}<div class="agenda">${agenda(entries)}</div></section></div>`);
 }
 function projects() {
   if (projectOpen) {
@@ -355,12 +377,12 @@ function projects() {
       return projects();
     }
     const entries = activeEntries().filter((e) => e.projectId === p.id);
-    main.innerHTML = `<div class="heading-row"><div><button class="ghost" data-action="project-back">${icon("left")} 프로젝트</button><h1>${esc(p.name)}</h1><p>${esc(p.aliases.join(" · "))}</p></div><button class="icon-button" aria-label="프로젝트 수정" data-action="project-edit:${esc(p.id)}">${icon("edit")}</button></div>${p.note ? `<div class="panel summary">${esc(p.note)}</div>` : ""}<div class="toolbar" style="margin-top:14px">${button("업무 추가", "project-entry", "primary", "plus")}${button("양식 적용", "templates")}${button("보고서", "report")}</div><div class="agenda">${agenda(entries, { showDate: true })}</div>`;
+    setMainHTML(`<div class="heading-row"><div><button class="ghost" data-action="project-back">${icon("left")} 프로젝트</button><h1>${esc(p.name)}</h1><p>${esc(p.aliases.join(" · "))}</p></div><button class="icon-button" aria-label="프로젝트 수정" data-action="project-edit:${esc(p.id)}">${icon("edit")}</button></div>${p.note ? `<div class="panel summary">${esc(p.note)}</div>` : ""}<div class="toolbar" style="margin-top:14px">${button("업무 추가", "project-entry", "primary", "plus")}${button("양식 적용", "templates")}${button("보고서", "report")}</div><div class="agenda">${agenda(entries, { showDate: true })}</div>`);
     return;
   }
   const card = (p) =>
     `<button class="project-card" data-action="project-open:${esc(p.id)}"><i class="project-color" style="background:${esc(p.color)}"></i><span class="info"><strong>${p.favorite ? "★ " : ""}${esc(p.name)}</strong><p>${p.status === "archived" ? "보관 · " : p.status === "hold" ? "보류 · " : ""}${activeEntries().filter((e) => e.projectId === p.id && !done(e)).length}개 남음${p.aliases.length ? " · " + esc(p.aliases[0]) : ""}</p></span>${icon("right")}</button>`;
-  main.innerHTML = `<div class="project-list"><div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>프로젝트</h1><p>작업을 나누고, 흐름을 정리하세요.</p></div><button class="icon-button primary" aria-label="프로젝트 추가" data-action="project-new">${icon("plus")}</button></div><div class="toolbar">${button("폴더 추가", "folder-new", "ghost", "folder")}${button("프로젝트 합치기", "project-merge", "ghost")}${button("업무 양식", "templates", "ghost")}</div>${state()
+  setMainHTML(`<div class="project-list"><div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>프로젝트</h1><p>작업을 나누고, 흐름을 정리하세요.</p></div><button class="icon-button primary" aria-label="프로젝트 추가" data-action="project-new">${icon("plus")}</button></div><div class="toolbar">${button("폴더 추가", "folder-new", "ghost", "folder")}${button("프로젝트 합치기", "project-merge", "ghost")}${button("업무 양식", "templates", "ghost")}</div>${state()
     .projects.filter((p) => !p.folderId)
     .map(card)
     .join("")}${state()
@@ -378,7 +400,7 @@ function projects() {
     )
     .join(
       "",
-    )}${!state().projects.length ? empty("첫 프로젝트를 만들어 업무를 모아보세요.", "project-new", "프로젝트 만들기") : ""}</div>`;
+    )}${!state().projects.length ? empty("첫 프로젝트를 만들어 업무를 모아보세요.", "project-new", "프로젝트 만들기") : ""}</div>`);
 }
 function overview() {
   const es = activeEntries(),
@@ -430,7 +452,7 @@ function overview() {
   );
   if (overviewFilter === "deadlines")
     list.sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || ""));
-  main.innerHTML = `<div class="heading-row"><div><p class="eyebrow">AT A GLANCE</p><h1>모아보기</h1><p>흩어진 기록을 한눈에.</p></div><button class="icon-button" aria-label="보고서 내보내기" data-action="report">${icon("download")}</button></div><div class="stats"><div class="stat"><strong>${es.filter((e) => e.date === today()).length}</strong><span>오늘의 기록</span></div><div class="stat"><strong>${open.length}</strong><span>남은 일</span></div><div class="stat"><strong>${es.filter((e) => ["done", "answered"].includes(e.status)).length}</strong><span>완료한 기록</span></div></div><input id="search-query" class="search-input" type="search" aria-label="기록 검색" placeholder="내용, 프로젝트, 메모, 답변 검색" value="${esc(query)}"><div class="chips">${[
+  setMainHTML(`<div class="heading-row"><div><p class="eyebrow">AT A GLANCE</p><h1>모아보기</h1><p>흩어진 기록을 한눈에.</p></div><button class="icon-button" aria-label="보고서 내보내기" data-action="report">${icon("download")}</button></div><div class="stats"><div class="stat"><strong>${es.filter((e) => e.date === today()).length}</strong><span>오늘의 기록</span></div><div class="stat"><strong>${open.length}</strong><span>남은 일</span></div><div class="stat"><strong>${es.filter((e) => ["done", "answered"].includes(e.status)).length}</strong><span>완료한 기록</span></div></div><input id="search-query" class="search-input" type="search" aria-label="기록 검색" placeholder="내용, 프로젝트, 메모, 답변 검색" value="${esc(query)}"><div class="chips">${[
     ...state().settings.widgets,
     "search",
   ]
@@ -441,7 +463,7 @@ function overview() {
     )
     .join(
       "",
-    )}<button data-action="planner-filter">${icon("filter")} 필터</button></div>${selectedBar()}<p class="section-title">${esc(names[overviewFilter] || "기록")} · ${list.length}개</p><div class="agenda">${agenda(list, { showDate: true })}</div>`;
+    )}<button data-action="planner-filter">${icon("filter")} 필터</button></div>${selectedBar()}<p class="section-title">${esc(names[overviewFilter] || "기록")} · ${list.length}개</p><div class="agenda">${agenda(list, { showDate: true })}</div>`);
 }
 function driveCard() {
   const connected = authConnected() && permissionState(auth).drive,
@@ -454,7 +476,7 @@ function settings() {
     status = sync?.status(),
     account = repo.record.activeAccount,
     connected = authConnected();
-  main.innerHTML = `<div class="heading-row"><div><p class="eyebrow">MAKE IT YOURS</p><h1>설정</h1><p>H.PLAN 모바일 ${APP_VERSION}</p></div></div><div class="settings-layout"><div class="stack">${driveCard()}<section><p class="section-title">데이터와 복구</p><div class="action-list">${button("백업 파일 내려받기", "backup", "", "download")}${button("백업 파일 가져오기", "restore", "", "upload")}${button("기기 내 자동 백업", "backups", "", "clock")}${button("보고서 · Excel · 인쇄", "report", "", "print")}${button("휴지통", "trash", "", "trash")}${button("저장공간 보호 요청", "persist", "", "check")}</div><p class="help" style="padding:10px">브라우저 데이터를 삭제하면 기기 기록도 지워질 수 있습니다. Drive 동기화나 별도 백업을 함께 사용하세요.</p></section></div><div class="stack"><section><p class="section-title">화면과 사용성</p><div class="settings-group"><div class="setting-row"><div><strong>테마</strong><p>밝게 · 어둡게 · 기기 설정</p></div><select id="setting-theme" aria-label="테마">${[
+  setMainHTML(`<div class="heading-row"><div><p class="eyebrow">MAKE IT YOURS</p><h1>설정</h1><p>H.PLAN 모바일 ${APP_VERSION}</p></div></div><div class="settings-layout"><div class="stack">${driveCard()}${googlePanel(calendar,notifications,nativeBridge,auth,{connecting,connectionError:authRefreshError})}<section><p class="section-title">데이터와 복구</p><div class="action-list">${button("백업 파일 내려받기", "backup", "", "download")}${button("백업 파일 가져오기", "restore", "", "upload")}${button("기기 내 자동 백업", "backups", "", "clock")}${button("보고서 · Excel · 인쇄", "report", "", "print")}${button("휴지통", "trash", "", "trash")}${button("저장공간 보호 요청", "persist", "", "check")}</div><p class="help" style="padding:10px">브라우저 데이터를 삭제하면 기기 기록도 지워질 수 있습니다. Drive 동기화나 별도 백업을 함께 사용하세요.</p></section></div><div class="stack"><section><p class="section-title">화면과 사용성</p><div class="settings-group"><div class="setting-row"><div><strong>테마</strong><p>밝게 · 어둡게 · 기기 설정</p></div><select id="setting-theme" aria-label="테마">${[
     ["light", "밝게"],
     ["dark", "어둡게"],
     ["system", "기기 설정"],
@@ -476,8 +498,7 @@ function settings() {
     )
     .join(
       "",
-    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`;
-  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge,auth,{connecting,connectionError:authRefreshError}));
+    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`);
 }
 function renderNotice() {
   const n = $("#notice");
@@ -808,10 +829,14 @@ async function performAutoSync(reason='foreground') {
       await session.token();
       if(session!==auth||generation!==connectionGeneration)return;
       authRefreshError=false;
+      // Reserve imminent reminders independently of slow Drive/Calendar RPCs.
+      // The notification queue guards account changes and native handover itself.
+      notifications?.upload().catch(()=>{});
       if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
       if(sync&&!sync.stopped&&(reason!=='idle'||Date.now()-lastDriveAttempt>=60000)){lastDriveAttempt=Date.now();try{await runSync(false, true);}catch{}}
       if(!modal.open)try{await calendar?.run({reason});}catch{}
-      await notifications?.upload();
+      // Remote completions/edits may cancel or change a reminder during that run.
+      notifications?.upload().catch(()=>{});
       renderSyncStatus();
     }
   } catch {
@@ -1434,6 +1459,7 @@ async function handle(a) {
       return;
   }
 }
+const pendingActions = new Set();
 document.addEventListener("click", async (event) => {
   const navButton = event.target.closest("[data-route]");
   if (navButton) {
@@ -1444,19 +1470,23 @@ document.addEventListener("click", async (event) => {
     return;
   }
   const target = event.target.closest("[data-action]");
-  if (!target || target.disabled || busy || target.dataset.waiting) return;
+  const pendingKey = connectionGeneration + ':' + target?.dataset.action;
+  if (!target || target.disabled || busy || target.dataset.waiting || pendingActions.has(pendingKey)) return;
   event.preventDefault();
-  const background = ["drive-connect", "drive-sync", "drive-backup"].includes(
-    target.dataset.action,
+  const actionName = target.dataset.action;
+  const background = ["drive-connect", "drive-sync", "drive-backup", "calendar-sync", "tasks-sync", "google-authorize", "notifications-enable", "notifications-disable"].includes(
+    actionName.split(':')[0],
   );
   if (!background) busy = true;
+  pendingActions.add(pendingKey);
   target.dataset.waiting = "true";
   try {
-    await handle(target.dataset.action);
+    await handle(actionName);
   } catch (e) {
     toast(e.message);
   } finally {
-    busy = false;
+    if (!background) busy = false;
+    pendingActions.delete(pendingKey);
     delete target.dataset.waiting;
   }
 });
@@ -1663,6 +1693,6 @@ try {
     });
   }
 } catch (e) {
-  main.innerHTML = `<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`;
+  setMainHTML(`<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`);
   $("#save-state").textContent = "저장소 오류";
 }

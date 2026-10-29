@@ -42,9 +42,10 @@ export class AppNotifications {
   let subscription=await registration.pushManager.getSubscription();
   if(!current())return false;
   let created=false;
-  if(!subscription){if(!force)return false;const key=await auth.request('/v1/push',credential);if(!current())return false;if(!key.ready)throw Error('웹 알림 서버 설정을 확인해 주세요.');const bytes=Uint8Array.from(atob(key.publicKey.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});created=true;}
+  if(!subscription){const key=await auth.request('/v1/push',credential);if(!current())return false;if(!key.ready)throw Error('웹 알림 서버 설정을 확인해 주세요.');const bytes=Uint8Array.from(atob(key.publicKey.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});created=true;}
   if(!current()){if(created)await subscription.unsubscribe();return false;}
-  const now=Date.now(),jobs=notificationSchedule(this.getState().entries,{from:new Date(now),to:new Date(now+365*86400000),ledger:this.ledger});
+  // Include the current minute, leaving30s inside the server's90s grace for transit.
+  const now=Date.now(),jobs=notificationSchedule(this.getState().entries,{from:new Date(now-60000),to:new Date(now+365*86400000),ledger:this.ledger});
   const signature=JSON.stringify([auth.account?.sub||'',auth.credential?.secret||'',subscription.endpoint,jobs]);if(!force&&signature===this.uploaded)return;
   await auth.request('/v1/push',credential,{method:'POST',body:{subscription:subscription.toJSON(),jobs}});
   if(!current()){this.uploaded=null;await auth.request('/v1/push',credential,{method:'DELETE'}).catch(()=>{});if(created)await subscription.unsubscribe();return false;}
