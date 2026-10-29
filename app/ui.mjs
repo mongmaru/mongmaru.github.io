@@ -48,11 +48,11 @@ export const icon = (name) =>
 export const button = (label, action, cls = "", symbol = "") =>
   `<button type="button" class="${esc(cls)}" data-action="${esc(action)}">${symbol ? icon(symbol) : ""}${esc(label)}</button>`;
 export const field = (label, name, value = "", type = "text", extra = "") =>
-  `<label class="field">${esc(label)}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
+  `<label class="field">${esc(label)}<input name="${name}" aria-label="${esc(label)}" type="${type}" value="${esc(value)}" ${extra}></label>`;
 export const area = (label, name, value = "", extra = "") =>
-  `<label class="field ${extra}">${esc(label)}<textarea name="${name}">${esc(value)}</textarea></label>`;
+  `<label class="field ${extra}">${esc(label)}<textarea name="${name}" aria-label="${esc(label)}">${esc(value)}</textarea></label>`;
 export const select = (label, name, items, value = "", extra = "") =>
-  `<label class="field ${extra}">${esc(label)}<select name="${name}">${items.map(([id, text]) => `<option value="${esc(id)}" ${String(id) === String(value) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select></label>`;
+  `<label class="field ${extra}">${esc(label)}<select name="${name}" aria-label="${esc(label)}">${items.map(([id, text]) => `<option value="${esc(id)}" ${String(id) === String(value) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select></label>`;
 export const checkbox = (label, name, checked = false) =>
   `<label class="check"><input type="checkbox" name="${name}" ${checked ? "checked" : ""}>${esc(label)}</label>`;
 export const statusLabels = {

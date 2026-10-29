@@ -5,6 +5,11 @@ import { DriveClient } from "./core/drive-client.mjs";
 import { SyncController } from "./core/sync.mjs";
 import { WebAuth } from "./core/auth.mjs";
 import { PersistentAuth } from "./core/persistent-auth.mjs";
+import { CalendarIntegration } from './calendar-integration.mjs';
+import { NativeBridge } from './native-bridge.mjs';
+import { AppNotifications } from './notifications.mjs';
+import { googlePanel } from './google-ui.mjs';
+import { expandEntries } from './core/calendar-recurrence.mjs';
 import {
   GOOGLE_WEB_CLIENT_ID,
   APP_VERSION,
@@ -49,6 +54,9 @@ const authConnected = () =>
     ? auth.connected
     : !!auth.tokenValue && Date.now() < auth.expires;
 let repo,
+  calendar,
+  nativeBridge,
+  notifications,
   auth = createAuth(),
   sync = null,
   channel,
@@ -87,7 +95,7 @@ const nav = [
 ];
 const state = () => repo.state;
 const activeEntries = () => state().entries.filter((e) => !e.deletedAt);
-const getEntry = (id) => state().entries.find((e) => e.id === id);
+const getEntry = (id) => state().entries.find((e) => e.id === id) || expandEntries(activeEntries(),date,date).find(e=>e.id===id);
 const getProject = (id) => state().projects.find((p) => p.id === id);
 const projectOptions = () => [
   ["", "공통 업무"],
@@ -238,7 +246,7 @@ function entryCard(e, { showDate = false } = {}) {
     complete = ["done", "answered"].includes(e.status),
     sub = e.parentId;
   return `<article class="entry ${done(e) ? "done" : ""} ${sub ? "child" : ""} ${e.status === "moved" ? "moved" : ""}" data-entry="${esc(e.id)}"><button class="entry-check ${complete ? "checked" : ""}" aria-label="${complete ? "완료 취소" : "완료로 표시"}" data-action="toggle:${esc(e.id)}">${icon(complete ? "check" : "circle")}</button>
- <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" aria-label="${esc(e.text)} 수정"><div class="entry-title" ${/^#[a-f\d]{6}$/i.test(e.color || "") ? `style="color:${esc(e.color)}"` : ""}>${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
+ <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" aria-label="${esc(e.text)} 수정"><div class="entry-title" ${/^#[a-f\d]{6}$/i.test(e.color || "") ? `style="color:${esc(e.color)}"` : ""}>${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.allDay===false?`<span>${esc(e.startTime)}–${esc(e.endTime)}</span>`:""}${e.endDate?`<span>기간 ${esc(e.date.slice(5))}–${esc(e.endDate.slice(5))}</span>`:""}${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrenceRule || e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
 }
 function ordered(entries) {
   const result = [];
@@ -289,8 +297,8 @@ function planner() {
           : shiftDay(first, -new Date(first + "T12:00:00Z").getUTCDay()),
       count = calendarMode === "week" ? 7 : 42;
     const counts = new Map();
-    for (const e of activeEntries())
-      counts.set(e.date, (counts.get(e.date) || 0) + 1);
+    for (const e of expandEntries(activeEntries(),start,shiftDay(start,count-1)))
+      for(let day=e.date>start?e.date:start;day<=(e.endDate||e.date)&&day<=shiftDay(start,count-1);day=shiftDay(day,1))counts.set(day,(counts.get(day)||0)+1);
     calendar = `<div class="calendar" ${state().settings.hideWeekends ? 'style="grid-template-columns:repeat(5,minmax(0,1fr))"' : ""}>${[
       "일",
       "월",
@@ -314,9 +322,9 @@ function planner() {
       return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="day-dots">${Array.from({ length: Math.min(n, 3) }, () => '<i class="dot"></i>').join("")}</span></button>`;
     }).join("")}</div>`;
   }
-  const entries = activeEntries().filter(
+  const entries = expandEntries(activeEntries(),date,date).filter(
     (e) =>
-      e.date === date &&
+      e.date <= date && (e.endDate || e.date) >= date &&
       (kind === "all" || e.kind === kind) &&
       (!projectFilter || e.projectId === projectFilter) &&
       (!statusFilter || e.status === statusFilter),
@@ -434,7 +442,7 @@ function driveCard() {
   const connected = authConnected(),
     status = sync?.status(),
     account = repo.record.activeAccount;
-  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google Drive</h2><p class="account">${connected ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button("Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
+  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google 연동 · Drive</h2><p class="account">${connected ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button("Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
 }
 function settings() {
   const s = state().settings,
@@ -463,7 +471,8 @@ function settings() {
     )
     .join(
       "",
-    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. 휴대폰 홈 화면 위젯은 제공하지 않습니다.</p></div></div>`;
+    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`;
+  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge));
 }
 function renderNotice() {
   const n = $("#notice");
@@ -486,7 +495,8 @@ async function editEntry(id = null, preset = {}) {
     entryForm(state(), date, e, preset),
     async () => {
       const value = entryValue(form, e);
-      await action({ type: "entry.save", value }, "기기에 저장했습니다.", e);
+      const scope=String(new FormData(form).get('recurrenceScope')||'all');
+      await action({ type: "entry.save", value, scope, recurrenceChanged:form.dataset.recurrenceChanged==='true', occurrenceDate:e?.originalDate||e?.date||date }, "기기에 저장했습니다.", e?.seriesId?null:e);
       date = value.date;
       clearDraft();
       closeModal(true);
@@ -498,9 +508,11 @@ async function editEntry(id = null, preset = {}) {
     },
   );
   form.dataset.entryId = id || "";
+  form.dataset.recurrenceChanged = 'false';
+  if(e?.seriesId||e?.recurrenceRule||e?.recurrence!=='none'&&e?.recurrence)body.insertAdjacentHTML('afterbegin',select('수정 범위','recurrenceScope',[['this','이 일정만'],['following','이 일정과 이후 일정'],['all','전체 반복 일정']],e?.seriesId?'this':'all','full'));
   adaptEntryForm(form, state());
   draftInitial = new URLSearchParams(new FormData(form)).toString();
-  form.onchange = () => adaptEntryForm(form, state());
+  form.onchange = event => {adaptEntryForm(form, state());if(['repeatMode','frequency','interval','weekdays','monthMode','monthPosition','monthWeekday','repeatEnd','repeatUntil','repeatCount'].includes(event.target.name)||event.target.name?.startsWith('repeatDay:'))form.dataset.recurrenceChanged='true';};
 }
 function editProject(id = null) {
   const p = id ? getProject(id) : {};
@@ -597,10 +609,11 @@ function chooseStatus(ids) {
       allowed.map((x) => [x, statusLabels[x]]),
     ),
     async () => {
-      await action(
-        { type: "entry.status", ids, status: new FormData(form).get("status") },
-        "상태를 변경했습니다.",
-      );
+      const status=new FormData(form).get('status');
+      for(const e of es)if(e.seriesId||e.recurrenceRule||e.recurrence!=='none'&&e.recurrence)await action({type:'entry.save',value:{...e,status},scope:'this',occurrenceDate:e.originalDate||e.date});
+      const ordinary=es.filter(e=>!e.seriesId&&!e.recurrenceRule&&(!e.recurrence||e.recurrence==='none')).map(e=>e.id);
+      if(ordinary.length)await action({type:'entry.status',ids:ordinary,status});
+      toast('상태를 변경했습니다.');
       closeModal(true);
     },
   );
@@ -768,10 +781,14 @@ async function autoSync() {
       await restoreDrive();
       return;
     }
-    if (sync && !sync.stopped) await runSync(false, true);
+    if (sync && !sync.stopped) {
+      await runSync(false, true);
+      if(!modal.open)await calendar?.run();
+      await notifications?.upload();
+    }
   } catch {} // A remembered connection and local edits survive transient errors.
 }
-async function connectDrive() {
+async function connectDrive(features = {}) {
   if (connecting || disconnecting) return;
   if (!GOOGLE_WEB_CLIENT_ID && !AUTH_SERVER_URL) {
     toast(
@@ -787,7 +804,7 @@ async function connectDrive() {
     // PersistentAuth opens the consent window synchronously during the original tap.
     if (!nextAuth.restore) await nextAuth.prepare();
     if (attempt !== connectionGeneration) return;
-    const account = await nextAuth.connect();
+    const account = await nextAuth.connect(features);
     if (attempt !== connectionGeneration) return;
     if (
       repo.record.activeAccount &&
@@ -801,6 +818,7 @@ async function connectDrive() {
     }
     await attachDrive(nextAuth, account, attempt);
     channel?.postMessage({ type: "auth-change" });
+    if(features.calendar)await calendar.configure({enabled:true,tasks:!!features.tasks});
     render();
   } finally {
     if (pendingAuth === nextAuth) pendingAuth = null;
@@ -829,6 +847,28 @@ async function handle(a) {
     op = pos < 0 ? a : a.slice(0, pos),
     arg = pos < 0 ? "" : a.slice(pos + 1);
   switch (op) {
+    case 'native-settings':nativeBridge.send({type:'hplan.native.settings'});return;
+    case 'calendar-manage': {
+      if(!authConnected())return connectDrive({calendar:true,tasks:true});
+      let options=[];
+      try{options=await calendar.calendars();}catch(e){
+        modalOpen('Google Calendar 연결',`<p>${esc(e.message)}</p><p class="help">기존 Drive 연결은 유지됩니다. 추가 권한을 허용한 뒤 Calendar API와 Tasks API를 사용합니다.</p>${button('Calendar·할 일 권한 연결','calendar-authorize','primary')}`);return;
+      }
+      const s=calendar.options();
+      return modalOpen('Google 연동 설정',`<div class="stack">${checkbox('Calendar 양방향 동기화','calendarEnabled',s.enabled)}${checkbox('Google 할 일도 가져오기','tasksEnabled',s.tasks)}<p class="help">H.PLAN에서 만든 일정은 선택한 첫 번째 캘린더로 보냅니다. 처음 연결한 달 1일부터 가져오며, 이후에도 이 기준은 유지합니다.</p>${options.map(c=>checkbox(c.summary||c.id,'calendar:'+c.id,(s.calendarIds||['primary']).includes(c.id)||c.primary&&(s.calendarIds||[]).includes('primary'))).join('')}<p class="help">일정 출처에 따라 삭제가 연결됩니다. Google 원본은 바로 삭제하며, H.PLAN 원본은 H.PLAN 휴지통으로 보냅니다.</p>${button('권한 다시 연결','calendar-authorize')}</div>`,async()=>{const f=new FormData(form),ids=options.filter(c=>f.has('calendar:'+c.id)).map(c=>c.id);if(f.has('calendarEnabled')&&!ids.length)throw Error('캘린더를 하나 이상 선택해 주세요.');await calendar.configure({enabled:f.has('calendarEnabled'),tasks:f.has('tasksEnabled'),calendarIds:ids});closeModal(true);await autoSync();});
+    }
+    case 'calendar-authorize':closeModal(true);return connectDrive({calendar:true,tasks:true});
+    case 'calendar-sync':closeModal(true);if(!calendar.options().enabled)return handle('calendar-manage');await calendar.run();scheduleSync();return toast('Calendar 동기화를 확인했습니다.');
+    case 'calendar-conflicts': {
+      const entries=calendar.status.conflicts;
+      return modalOpen('Calendar 수정 충돌',entries.length?`<div class="stack">${entries.map(e=>`<section class="panel"><h3>${esc(e.text)}</h3>${Object.entries(e.google.conflicts).map(([key,v])=>`<div class="summary"><strong>${esc(key)}</strong><p>H.PLAN: ${esc(JSON.stringify(v.local))}</p><p>Google: ${esc(JSON.stringify(v.google??v.remote))}</p><div class="row">${button('H.PLAN 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'local']))}`)}${button('Google 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'google']))}`)}</div></div>`).join('')}</section>`).join('')}</div>`:'<p>확인할 수정 충돌이 없습니다.</p>');
+    }
+    case 'calendar-resolve':closeModal(true);await calendar.resolve(...JSON.parse(decodeURIComponent(arg)));scheduleSync();return handle('calendar-conflicts');
+    case 'notifications-enable':await notifications.enable();render();return toast('이 기기의 알림을 켰습니다.');
+    case 'notifications-disable':await notifications.disable();render();return toast('이 기기의 웹 알림을 껐습니다.');
+    case 'trash-empty': {
+      const ids=state().entries.filter(e=>e.deletedAt).map(e=>e.id);if(ids.length&&confirm(`휴지통의 기록 ${ids.length}개를 모두 영구 삭제할까요? 별도 백업은 지우지 않습니다.`)){await action({type:'entry.purge',ids});return handle('trash');}return;
+    }
     case "entry-new":
       return editEntry();
     case "edit":
@@ -848,6 +888,7 @@ async function handle(a) {
       return entryMenu(arg);
     case "toggle": {
       const e = getEntry(arg);
+      if(e.seriesId||e.recurrenceRule||e.recurrence!=='none'&&e.recurrence){const status=['done','answered'].includes(e.status)?(e.kind==='question'?'open':'planned'):(e.kind==='question'?'answered':'done');await action({type:'entry.save',value:{...e,status},scope:'this',occurrenceDate:e.originalDate||e.date});await notifications?.acknowledge(e.id);return;}
       return action({
         type: "entry.status",
         ids: [arg],
@@ -860,16 +901,19 @@ async function handle(a) {
             : "done",
       });
     }
-    case "delete":
-      if (confirm("선택한 기록과 연결된 하위 업무를 휴지통으로 옮길까요?")) {
+    case "delete": {
+      const e=getEntry(arg),message=e.origin==='google'?'Google 원본 일정입니다. H.PLAN과 Google에서 이 기록을 삭제할까요?':'이 기록을 H.PLAN 휴지통으로 옮기고 연결한 Google 일정을 삭제할까요?';
+      if(e.seriesId||e.recurrenceRule||e.recurrence!=='none'&&e.recurrence)return modalOpen('반복 일정 삭제',`<p>${esc(message)}</p>${select('삭제 범위','deleteScope',[['this','이 일정만'],['following','이 일정과 이후 일정'],['all','전체 반복 일정']],'this')}`,async()=>{await action({type:'entry.delete',ids:[arg],scope:new FormData(form).get('deleteScope'),occurrenceDate:e.originalDate||e.date});clearDraft();closeModal(true);},{label:'삭제'});
+      if (confirm(message)) {
         await action(
           { type: "entry.delete", ids: [arg] },
-          "휴지통으로 옮겼습니다.",
+          e.origin==='google'?"일정을 삭제했습니다.":"휴지통으로 옮겼습니다.",
         );
         clearDraft();
         closeModal(true);
       }
       return;
+    }
     case "status":
       return chooseStatus([arg]);
     case "carry":
@@ -1151,7 +1195,7 @@ async function handle(a) {
     case "trash":
       return modalOpen(
         "휴지통",
-        `<div class="stack">${
+        `${button("휴지통 모두 비우기","trash-empty","danger")}<div class="stack">${
           state()
             .entries.filter((e) => e.deletedAt)
             .map(
@@ -1207,7 +1251,7 @@ async function handle(a) {
       );
     case "drive-manage":
       return modalOpen(
-        "Google Drive 관리",
+        "Google 연동 관리",
         `<div class="stack"><p>저장 위치: 내 드라이브 / H.PLAN</p><p class="help">자동 백업은 하루 1회, 기기별 최근 30개입니다. ${AUTH_SERVER_URL ? "한 번 연결하면 다음 실행에도 연결을 기억하고 자동 동기화합니다. Google 권한을 철회하거나 기기 데이터를 삭제하면 다시 연결해야 합니다." : "웹앱을 열었을 때 동기화하며 Google 연결이 만료되면 갱신이 필요합니다."}</p><div class="action-list">${button("계정 연결 또는 변경", "drive-connect", "", "cloud")}${button("Drive 백업 만들기", "drive-backup", "", "download")}${button("Drive 폴더 열기", "drive-folder", "", "folder")}${button("충돌 내용 확인", "drive-conflicts", "", "note")}${button("연결 해제", "drive-disconnect", "danger")}</div></div>`,
       );
     case "drive-connect":
@@ -1320,7 +1364,7 @@ async function handle(a) {
     case "help":
       return modalOpen(
         "H.PLAN 사용 안내",
-        `<div class="stack"><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>휴대폰 앱을 닫은 동안의 동기화는 보장하지 않습니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC 2.1 동기화 형식 호환</p></div>`,
+        `<div class="stack"><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC 2.2 동기화 형식 호환</p></div>`,
       );
     case "report": {
       const { reportDialog } = await import("./reports-ui.mjs");
@@ -1498,7 +1542,14 @@ setInterval(() => {
 }, 60000);
 try {
   repo = await Repository.open(await IndexedStore.open());
+  calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{if(route==='settings'&&!modal.open)settings();}});
+  notifications=new AppNotifications({getState:state,getAuth:()=>auth,getNative:()=>nativeBridge,onError:e=>toast(e.message)});
+  nativeBridge=new NativeBridge({getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:id=>notifications.acknowledge(id),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
+  const launch=new URLSearchParams(location.search);
+  if(dateOK(launch.get('date')))date=launch.get('date');
+  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId).catch(()=>{});});
   repo.subscribe(() => {
+    nativeBridge?.update();
     if (!modal.open) render();
   });
   if ("BroadcastChannel" in window) {
@@ -1546,14 +1597,14 @@ try {
         location.reload();
       }
     });
-    const registration = await navigator.serviceWorker.register("./sw.js");
-    if (registration.waiting) {
+    const registration = await navigator.serviceWorker.register("./sw.js").catch(()=>null);
+    if (registration?.waiting) {
       waitingWorker = registration.waiting;
       renderNotice();
     }
-    registration.addEventListener("updatefound", () => {
+    registration?.addEventListener("updatefound", () => {
       const worker = registration.installing;
-      worker.addEventListener("statechange", () => {
+      worker?.addEventListener("statechange", () => {
         if (
           worker.state === "installed" &&
           navigator.serviceWorker.controller

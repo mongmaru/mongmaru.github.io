@@ -1,4 +1,4 @@
-// Browser port of PC 2.1.0; regenerate with node scripts/prepare-core.mjs
+// Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 const randomUUID = () => globalThis.crypto.randomUUID();
 const API = "https://www.googleapis.com/drive/v3";
 const MAX_BYTES = 32 * 1024 * 1024;

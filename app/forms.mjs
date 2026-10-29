@@ -9,6 +9,7 @@ import {
   kindLabels,
   icon,
 } from "./ui.mjs";
+import { timingForm, timingValue, adaptTiming } from './calendar-form.mjs';
 const repeats = [
   ["none", "반복 안 함"],
   ["daily", "매일"],
@@ -33,7 +34,7 @@ export function entryForm(state, date, entry = {}, preset = {}) {
  <div class="full">${area("내용", "text", e.text || "")}<p class="help">업무를 짧게 적고, 자세한 내용은 메모에 남기세요.</p></div>
  ${select("프로젝트", "projectId", projects, e.projectId || "")}${select("상태", "status", Object.entries(statusLabels), e.status)}
  ${field("마감일", "dueDate", e.dueDate || "", "date")}${field("재확인 날짜", "reviewDate", e.reviewDate || "", "date")}
- ${select("반복", "recurrence", repeats, e.recurrence)}${field("반복 종료일", "recurrenceUntil", e.recurrenceUntil || "", "date")}
+ ${timingForm(e)}
  ${select("상위 업무", "parentId", [["", "상위 업무 없음"], ...state.entries.filter((x) => !x.deletedAt && !x.parentId && x.id !== e.id && x.date === e.date && x.kind === e.kind && (x.projectId || null) === (e.projectId || null)).map((x) => [x.id, x.text.slice(0, 45)])], e.parentId || "")}
  ${field("글자 강조 색상", "color", e.color || "#C9232C", "color")}
  <div class="full row">${checkbox("중요 표시", "priority", e.priority)}${checkbox("강조 색상 사용", "useColor", !!e.color)}</div>
@@ -60,9 +61,11 @@ export function entryValue(form, entry = {}) {
     notes: get("notes"),
     target: get("target"),
     answer: get("answer"),
+    ...timingValue(f, entry),
   };
 }
 export function adaptEntryForm(form, state) {
+  adaptTiming(form);
   const f = new FormData(form),
     kind = f.get("kind"),
     current = f.get("status");

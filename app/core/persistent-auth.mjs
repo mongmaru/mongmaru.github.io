@@ -48,11 +48,12 @@ export class PersistentAuth {
     await this.vault.read();
     this.flushRevocations().catch(() => {});
   }
-  async request(path, credential, { method = "GET" } = {}) {
+  async request(path, credential, { method = "GET", body: requestBody } = {}) {
     let res;
     try {
       res = await this.fetch(credential.server + path, {
         method,
+        ...(requestBody === undefined ? {} : { body: JSON.stringify(requestBody) }),
         headers: {
           Authorization: `Bearer ${credential.secret}`,
           "X-HPlan-Client": "mobile-v1",
@@ -103,6 +104,7 @@ export class PersistentAuth {
     if (data.active?.server !== this.server) return null;
     if (generation !== this.generation) throw cancelled();
     this.credential = data.active;
+    this.scopes = data.active.scopes || [];
     this.account = data.active.account;
     this.requiresReauth = !!data.active.reauth;
     return this.account;
@@ -120,6 +122,8 @@ export class PersistentAuth {
       );
     this.account = { sub: body.account.sub, email: body.account.email };
     this.credential = { ...this.credential, account: this.account };
+    this.scopes = body.scopes || this.credential.scopes || [];
+    this.credential.scopes = this.scopes;
     this.tokenValue = body.accessToken;
     this.expires = this.now() + Math.max(0, body.expiresIn - 90) * 1000;
     this.requiresReauth = false;
@@ -132,7 +136,7 @@ export class PersistentAuth {
     });
     if (generation !== this.generation) throw cancelled();
   }
-  async connect() {
+  async connect({calendar = false, tasks = false} = {}) {
     const generation = this.generation;
     // Open during the original tap, before IndexedDB/network work (mobile popup policies).
     const popup = this.openPopup();
@@ -149,7 +153,8 @@ export class PersistentAuth {
         data.pending = credential;
         return data;
       });
-      const start = await this.request("/v1/start", credential, {
+      const features = new URLSearchParams({...(calendar ? {calendar:'1'} : {}),...(tasks ? {tasks:'1'} : {})});
+      const start = await this.request("/v1/start" + (features.size ? '?' + features : ''), credential, {
         method: "POST",
       });
       if (generation !== this.generation) throw cancelled();

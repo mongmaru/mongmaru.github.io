@@ -1,0 +1,1 @@
+[{"relation":["delegate_permission/common.handle_all_urls","delegate_permission/common.use_as_origin"],"target":{"namespace":"android_app","package_name":"com.hplan.app","sha256_cert_fingerprints":["B5:3D:11:7A:CC:27:01:D6:D5:0B:E5:60:0E:C9:8B:E5:61:29:FB:F3:CF:BE:60:2E:5D:AD:F5:C2:4B:DB:12:90"]}}]

@@ -1,5 +1,6 @@
-// Browser port of PC 2.1.0; regenerate with node scripts/prepare-core.mjs
+// Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 const randomUUID = () => globalThis.crypto.randomUUID();
+import { parseRule, recurrenceDates, shiftDate, dateInZone, expandEntries, isRecurring, recurrenceDateValues } from "./calendar-recurrence.mjs";
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const today = () =>
   new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(
@@ -21,61 +22,48 @@ const entryStatuses = {
   question: ["open", "waiting", "answered", "hold"],
 };
 const repeatValues = ["daily", "weekdays", "weekly", "monthly"];
+const notificationDefaults = {enabled:false,beforeMinutes:5,repeatMinutes:5,count:5};
+function validateEntryCalendar(e) {
+  if (e.allDay !== undefined && typeof e.allDay !== 'boolean') throw Error('종일 일정 설정이 올바르지 않습니다.');
+  if (e.endDate != null && (!dateOK(e.endDate) || e.endDate < e.date)) throw Error('종료일은 시작일 이후여야 합니다.');
+  for (const k of ['startTime','endTime']) if(e[k] != null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(e[k])) throw Error('일정 시각이 올바르지 않습니다.');
+  if(e.allDay===false && (!e.startTime||!e.endTime)) throw Error('시작 시각과 종료 시각을 입력해 주세요.');
+  if(e.allDay===false && (!e.endDate||e.endDate===e.date) && e.endTime <= e.startTime) throw Error('종료 시각은 시작 시각 이후여야 합니다.');
+  if(e.timeZone!==undefined) {if(typeof e.timeZone!=='string'||e.timeZone.length>100)throw Error('시간대가 올바르지 않습니다.');try{dateInZone(new Date(),e.timeZone);}catch{throw Error('시간대가 올바르지 않습니다.');}}
+  if(e.origin!==undefined&&!['hplan','google'].includes(e.origin))throw Error('원래 출처가 올바르지 않습니다.');
+  if(e.recurrenceRule!=null) {if(typeof e.recurrenceRule!=='string'||e.recurrenceRule.length>2048)throw Error('반복 규칙이 올바르지 않습니다.');parseRule(e.recurrenceRule);}
+  if(e.recurrenceExceptions!==undefined&&(!Array.isArray(e.recurrenceExceptions)||e.recurrenceExceptions.length>10000||e.recurrenceExceptions.some(x=>!dateOK(x))))throw Error('반복 예외 날짜가 올바르지 않습니다.');
+  if(e.recurrenceLines!==undefined&&(!Array.isArray(e.recurrenceLines)||e.recurrenceLines.length>10000||e.recurrenceLines.some(x=>typeof x!=='string'||x.length>8192)))throw Error('반복 원본 정보가 올바르지 않습니다.');
+  if(e.notifications!==undefined) {
+    const n=e.notifications;
+    if(!n||typeof n.enabled!=='boolean'||!Number.isInteger(n.beforeMinutes)||n.beforeMinutes<0||n.beforeMinutes>525600||!Number.isInteger(n.repeatMinutes)||n.repeatMinutes<1||n.repeatMinutes>10080||!Number.isInteger(n.count)||n.count<1||n.count>20)throw Error('알림 설정이 올바르지 않습니다.');
+  }
+  return e;
+}
+function calendarFields(v,old) {
+  const out={};
+  for(const [k,fallback] of Object.entries({allDay:true,endDate:null,startTime:null,endTime:null,timeZone:'Asia/Seoul',recurrenceRule:null,recurrenceExceptions:[],notifications:notificationDefaults})) out[k]=clone(v[k]===undefined?(old?.[k]??fallback):v[k]);
+  out.origin=old?.origin||'hplan';
+  out.recurrenceLines=clone(v.recurrenceLines===undefined?(old?.recurrenceLines||old?.google?.resource?.recurrence||[]):v.recurrenceLines);
+  return out;
+}
+function completeEndedPeriods(entries, now = new Date()) {
+  for(const e of entries) if(e.endDate&&!e.deletedAt&&!['done','answered','canceled','moved'].includes(e.status)&&!(!e.seriesId&&isRecurring(e))&&e.endDate<dateInZone(now,e.timeZone||'Asia/Seoul')) {
+    e.status=e.kind==='question'?'answered':'done';e.doneAt=new Date(now).toISOString();e.updatedAt=e.doneAt;
+  }
+  return entries;
+}
 function expandRecurrences(entries, through) {
   const result = clone(entries),
     ids = new Set(result.map((e) => e.id));
   const now = new Date().toISOString();
   for (const src of entries.filter(
-    (e) => !e.deletedAt && repeatValues.includes(e.recurrence) && !e.seriesId,
+    (e) => !e.deletedAt && isRecurring(e) && !e.seriesId,
   )) {
-    let d = new Date(src.date + "T12:00:00Z"),
-      end = new Date(
-        (src.recurrenceUntil && src.recurrenceUntil < through
-          ? src.recurrenceUntil
-          : through) + "T12:00:00Z",
-      );
-    let n = 1;
-    while (n <= 100000) {
-      let next = new Date(d);
-      if (src.recurrence === "monthly") {
-        const anchor = new Date(src.date + "T12:00:00Z");
-        next = new Date(
-          Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + n, 1, 12),
-        );
-        const max = new Date(
-          Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0),
-        ).getUTCDate();
-        next.setUTCDate(Math.min(anchor.getUTCDate(), max));
-      } else
-        next.setUTCDate(
-          next.getUTCDate() + (src.recurrence === "weekly" ? 7 : 1),
-        );
-      if (next > end) break;
-      const date = next.toISOString().slice(0, 10),
-        id = src.id + ":" + date;
-      if (
-        (src.recurrence !== "weekdays" || ![0, 6].includes(next.getUTCDay())) &&
-        !ids.has(id)
-      ) {
-        result.push({
-          ...clone(src),
-          id,
-          date,
-          status: entryStatuses[src.kind][0],
-          doneAt: null,
-          recurrence: "none",
-          seriesId: src.id,
-          seriesEdited: false,
-          movedTo: null,
-          destinationId: null,
-          sourceId: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-        ids.add(id);
-      }
-      d = next;
-      n++;
+    const duration=src.endDate?Math.round((Date.parse(src.endDate+'T12:00:00Z')-Date.parse(src.date+'T12:00:00Z'))/86400000):null;
+    for(const date of recurrenceDates(src,through)) {
+      const id=src.id+':'+date;if(date===src.date||ids.has(id))continue;
+      result.push({...clone(src),id,date,endDate:duration===null?null:shiftDate(date,duration),status:entryStatuses[src.kind][0],doneAt:null,recurrence:'none',recurrenceRule:null,recurrenceLines:[],seriesId:src.id,seriesEdited:false,google:undefined,movedTo:null,destinationId:null,sourceId:null,createdAt:now,updatedAt:now});ids.add(id);
     }
   }
   return result;
@@ -157,6 +145,7 @@ function validate(s) {
   }
   const eids = new Set();
   for (const e of s.entries) {
+    validateEntryCalendar(e);
     if (
       typeof e.id !== "string" ||
       !e.id ||
@@ -243,6 +232,61 @@ function validate(s) {
 }
 function apply(s, a) {
   const now = new Date().toISOString();
+  if(['entry.save','entry.delete'].includes(a.type)&&['this','following','all'].includes(a.scope)) {
+    const requested=a.type==='entry.save'?a.value?.id:a.ids?.[0];
+    let selected=s.entries.find(e=>e.id===requested),master=selected?.seriesId?s.entries.find(e=>e.id===selected.seriesId):selected;
+    if(!selected&&typeof requested==='string'&&dateOK(requested.slice(-10)))master=s.entries.find(e=>e.id===requested.slice(0,-11));
+    const occurrenceDate=a.occurrenceDate||selected?.originalDate||selected?.date||requested?.slice(-10);
+    if(master&&isRecurring(master)&&dateOK(occurrenceDate)) {
+      const daysBetween=(x,y)=>Math.round((Date.parse(x+'T12:00:00Z')-Date.parse(y+'T12:00:00Z'))/86400000);
+      const duration=master.endDate?daysBetween(master.endDate,master.date):null;
+      let scope=a.scope;if(scope==='following'&&occurrenceDate<=master.date)scope='all';
+      if(scope==='all') {
+        if(a.type==='entry.delete')a={...a,scope:undefined,ids:[master.id],_recurrenceAll:true};
+        else {
+          const moved=daysBetween(a.value.date||occurrenceDate,occurrenceDate),date=shiftDate(master.date,moved);
+          const endDate=a.value.endDate?shiftDate(date,daysBetween(a.value.endDate,a.value.date||occurrenceDate)):duration===null?null:shiftDate(date,duration);
+          a={...a,scope:undefined,value:{...master,...a.value,id:master.id,date,endDate,recurrenceRule:a.recurrenceChanged?(a.value.recurrenceRule??null):master.recurrenceRule,recurrenceLines:a.recurrenceChanged?[]:clone(master.recurrenceLines||master.google?.resource?.recurrence||[]),recurrence:a.recurrenceChanged?(a.value.recurrence||'none'):master.recurrence,seriesId:undefined,originalDate:undefined}};
+        }
+      } else if(scope==='this') {
+        if(a.type==='entry.delete'){
+          if((master.origin||'hplan')==='hplan'){
+            const id=master.id+':'+occurrenceDate;let target=s.entries.find(e=>e.id===id);
+            if(!target){target={...clone(master),id,date:occurrenceDate,endDate:duration===null?null:shiftDate(occurrenceDate,duration),recurrence:'none',recurrenceRule:null,recurrenceLines:[],seriesId:master.id,originalDate:occurrenceDate,google:undefined};s.entries.push(target);}target.seriesEdited=true;
+          }
+          apply(s,{type:'entry.recurrence.exclude',id:master.id,date:occurrenceDate});
+          const override=s.entries.find(e=>e.seriesId===master.id&&(e.originalDate||e.date)===occurrenceDate&&e.seriesEdited);
+          if(override)apply(s,{type:'entry.delete',ids:[override.id]});return validate(s);}
+        const id=master.id+':'+occurrenceDate;
+        let occurrence=s.entries.find(e=>e.id===id);
+        if(!occurrence){occurrence={...clone(master),id,date:occurrenceDate,endDate:duration===null?null:shiftDate(occurrenceDate,duration),recurrence:'none',recurrenceRule:null,recurrenceLines:[],seriesId:master.id,originalDate:occurrenceDate,seriesEdited:true,google:undefined};s.entries.push(occurrence);}
+        a={...a,scope:undefined,recurrenceChanged:false,value:{...occurrence,...a.value,id,recurrence:'none',recurrenceRule:null,recurrenceLines:[]}};
+      } else {
+        const originalRule=master.recurrenceRule,originalUntil=master.recurrenceUntil,originalLines=clone(master.recurrenceLines||master.google?.resource?.recurrence||[]);
+        const rangeLines=future=>originalLines.flatMap(line=>{
+          if(!/^(RDATE|EXDATE)[;:]/.test(line))return [line];
+          const prefix=line.slice(0,line.indexOf(':')+1),values=line.slice(line.indexOf(':')+1).split(','),dates=recurrenceDateValues([line],line.startsWith('RDATE')?'RDATE':'EXDATE',master.timeZone||'Asia/Seoul');
+          const kept=values.filter((v,i)=>future?dates[i]>=occurrenceDate:dates[i]<occurrenceDate);return kept.length?[prefix+kept.join(',')]:[];
+        });
+        master.recurrenceLines=rangeLines(false);
+        master.recurrenceUntil=shiftDate(occurrenceDate,-1);master.updatedAt=now;
+        if(a.type==='entry.delete') {
+          const ids=s.entries.filter(e=>e.seriesId===master.id&&(e.originalDate||e.date)>=occurrenceDate&&!e.deletedAt).map(e=>e.id);
+          if(ids.length)apply(s,{type:'entry.delete',ids});s.updatedAt=now;return validate(s);
+        }
+        const nextId=randomUUID(),date=a.value.date||occurrenceDate;
+        let rule=a.recurrenceChanged?(a.value.recurrenceRule??null):originalRule;
+        if(!a.recurrenceChanged&&rule&&/;COUNT=/.test(rule)) {
+          const before=recurrenceDates({...master,recurrenceUntil:originalUntil,recurrenceExceptions:[]},shiftDate(occurrenceDate,-1)).length;
+          rule=rule.replace(/;COUNT=(\d+)/,(_,n)=>';COUNT='+Math.max(1,+n-before));
+        }
+        const next={...clone(master),id:nextId,date,endDate:a.value.endDate===undefined?(duration===null?null:shiftDate(date,duration)):a.value.endDate,recurrenceRule:rule,recurrenceLines:a.recurrenceChanged?[]:rangeLines(true),recurrenceUntil:originalUntil,seriesId:undefined,originalDate:undefined,seriesEdited:false,google:undefined,calendarTarget:master.google?.service==='calendar'?{accountId:master.google.accountId,calendarId:master.google.calendarId}:master.calendarTarget,recurrenceExceptions:(master.recurrenceExceptions||[]).filter(d=>d>=occurrenceDate),createdAt:now,updatedAt:now};
+        s.entries=s.entries.filter(e=>e.seriesId!==master.id||(e.originalDate||e.date)<occurrenceDate||e.seriesEdited||e.deletedAt);
+        for(const e of s.entries)if(e.seriesId===master.id&&(e.originalDate||e.date)>=occurrenceDate&&e.seriesEdited){next.recurrenceExceptions.push(e.originalDate||e.date);}
+        s.entries.push(next);a={...a,scope:undefined,value:{...next,...a.value,id:nextId,recurrenceRule:rule,recurrenceLines:next.recurrenceLines,recurrence:a.recurrenceChanged?(a.value.recurrence||'none'):master.recurrence}};
+      }
+    }
+  }
   const find = (id) => {
     const e = s.entries.find((e) => e.id === id);
     if (!e) throw Error("항목을 찾을 수 없습니다.");
@@ -406,6 +450,7 @@ function apply(s, a) {
         : entryStatuses[kind][0];
       const e = {
         ...old,
+        ...calendarFields(v,old),
         id: old?.id || randomUUID(),
         kind,
         date: v.date,
@@ -419,8 +464,8 @@ function apply(s, a) {
         notes: text(v.notes),
         answer: text(v.answer),
         target: text(v.target, 120),
-        dueDate: v.dueDate || null,
-        reviewDate: v.reviewDate || null,
+        dueDate: v.dueDate === undefined ? old?.dueDate || null : v.dueDate || null,
+        reviewDate: v.reviewDate === undefined ? old?.reviewDate || null : v.reviewDate || null,
         priority: !!v.priority,
         color: v.color ? color(v.color) : null,
         recurrence:
@@ -437,6 +482,7 @@ function apply(s, a) {
           ? old?.doneAt || now
           : null,
       };
+      if(a.recurrenceChanged){e.recurrenceRule=v.recurrenceRule??null;e.recurrence=['daily','weekdays','weekly','monthly'].includes(v.recurrence)?v.recurrence:'none';e.recurrenceLines=[];e.recurrenceExceptions=[];}
       if (old) {
         e.seriesEdited = !!old.seriesId;
         const repeatEnd = s.entries
@@ -452,7 +498,7 @@ function apply(s, a) {
         }
         if (
           !old.seriesId &&
-          (old.recurrence !== "none" || e.recurrence !== "none")
+          (isRecurring(old)||isRecurring(e))
         ) {
           s.entries = s.entries.filter(
             (c) =>
@@ -462,11 +508,11 @@ function apply(s, a) {
               c.seriesEdited ||
               ["done", "answered", "canceled", "moved"].includes(c.status),
           );
-          if (repeatEnd && e.recurrence !== "none")
+          if (repeatEnd && isRecurring(e))
             s.entries = expandRecurrences(s.entries, repeatEnd);
         }
       } else s.entries.push(e);
-      if (!e.seriesId && e.recurrence !== "none") {
+      if (!e.seriesId && isRecurring(e)) {
         const end = new Date(e.date + "T12:00:00Z");
         end.setUTCMonth(end.getUTCMonth() + 1, 0);
         apply(s, {
@@ -483,6 +529,7 @@ function apply(s, a) {
         e.status = a.status;
         e.doneAt = ["done", "answered"].includes(a.status) ? now : null;
         e.updatedAt = now;
+        if(e.seriesId)e.seriesEdited=true;
       }
       break;
     case "entry.delete":
@@ -494,9 +541,9 @@ function apply(s, a) {
             x.parentId === e.id ||
             (a.type === "entry.delete"
               ? x.seriesId === e.id &&
-                x.date >= today() &&
+                (a._recurrenceAll||(x.date >= today() &&
                 !x.seriesEdited &&
-                !["done", "canceled", "moved"].includes(x.status)
+                !["done", "canceled", "moved"].includes(x.status)))
               : x.deletedBySeries === e.id),
         )) {
           item.deletedAt = a.type === "entry.delete" ? now : null;
@@ -506,8 +553,21 @@ function apply(s, a) {
         }
         if (a.type === "entry.restore" && e.parentId)
           find(e.parentId).deletedAt = null;
+        if(a.type==='entry.restore'&&e.seriesId){const master=s.entries.find(x=>x.id===e.seriesId);if(master){master.recurrenceExceptions=(master.recurrenceExceptions||[]).filter(date=>date!==(e.originalDate||e.date));master.updatedAt=now;}if(e.google?.deleted)e.google=undefined;e.calendarRestorePending=true;}
       }
+      if(a.type==='entry.delete') {
+        s.calendarDeletions={...(s.calendarDeletions||{})};
+        for(const e of s.entries)if(e.origin==='google'&&e.deletedAt&&e.google)s.calendarDeletions[e.id]={entryId:e.id,google:clone(e.google),origin:e.origin,at:e.deletedAt};
+        const removed=new Set(s.entries.filter(e=>e.origin==='google'&&e.deletedAt).map(e=>e.id));
+        s.entries=s.entries.filter(e=>!removed.has(e.id));
+        for(const e of s.entries)if(removed.has(e.parentId))e.parentId=null;
+      } else for(const e of s.entries)if(!e.deletedAt&&s.calendarDeletions)delete s.calendarDeletions[e.id];
       break;
+    case 'entry.recurrence.exclude': {
+      const e=find(a.id);if(!dateOK(a.date)||!isRecurring(e))throw Error('반복 예외 날짜를 확인해 주세요.');
+      e.recurrenceExceptions=[...new Set([...(e.recurrenceExceptions||[]),a.date])];e.updatedAt=now;
+      s.entries=s.entries.filter(x=>!(x.seriesId===e.id&&x.date===a.date&&!x.seriesEdited));break;
+    }
     case "entry.purge": {
       const ids = new Set(
         chosen()
@@ -537,11 +597,15 @@ function apply(s, a) {
       for (const e of all) {
         const copied = {
           ...clone(e),
+          origin:'hplan',google:undefined,
           id: map.get(e.id),
           date: a.date,
           parentId: map.get(e.parentId) || null,
           sourceId: a.type === "entry.carry" ? e.id : null,
           recurrence: "none",
+          recurrenceRule:null,
+          recurrenceLines:[],recurrenceExceptions:[],
+          endDate:e.endDate?shiftDate(a.date,Math.round((Date.parse(e.endDate+'T12:00:00Z')-Date.parse(e.date+'T12:00:00Z'))/86400000)):null,
           seriesId: null,
           status: entryStatuses[e.kind][0],
           doneAt: null,
@@ -641,6 +705,7 @@ function apply(s, a) {
       if (!dateOK(a.through))
         throw Error("반복 일정 기간이 올바르지 않습니다.");
       s.entries = expandRecurrences(s.entries, a.through);
+      completeEndedPeriods(s.entries,a.now||now);
       break;
     }
     default:
@@ -658,4 +723,8 @@ export {
   today,
   dateOK,
   expandRecurrences,
+  validateEntryCalendar,
+  completeEndedPeriods,
+  notificationDefaults,
+  expandEntries,
 };

@@ -1,6 +1,6 @@
-// Browser port of PC 2.1.0; regenerate with node scripts/prepare-core.mjs
+// Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 const randomUUID = () => globalThis.crypto.randomUUID();
-import { validate, clone, dateOK } from "./domain.mjs";
+import { validate, clone, dateOK, validateEntryCalendar } from "./domain.mjs";
 const COLLECTIONS = ["folders", "projects", "entries", "templates"];
 const FORMAT = "H.PLAN SYNC";
 const safeId = (x) =>
@@ -40,6 +40,7 @@ function checkValue(collection, v) {
       v.items.every(str) &&
       ref(v.projectId);
   if (collection === "entries") {
+    validateEntryCalendar(v);
     const statuses = {
       task: ["planned", "progress", "waiting", "done", "canceled", "moved"],
       personal: ["planned", "progress", "waiting", "done", "canceled", "moved"],
@@ -95,6 +96,7 @@ function check(g) {
     Object.keys(g.records).length > 200000
   )
     throw Error("동기화 데이터가 올바르지 않습니다.");
+  checkCalendarAccounts(g.calendarAccounts);
   for (const [key, versions] of Object.entries(g.records)) {
     const p = key.indexOf("/"),
       collection = key.slice(0, p),
@@ -134,6 +136,7 @@ function check(g) {
       )
         throw Error("동기화 데이터 값이 올바르지 않습니다.");
       checkValue(collection, v.value);
+      if(v.googleDeletion!==undefined){if(collection!=='entries'||v.value!==null)throw Error('Google 삭제 흔적 위치가 올바르지 않습니다.');checkGoogleDeletion(v.googleDeletion,id);}
     }
   }
   return g;
@@ -165,6 +168,7 @@ function merge(a, b) {
   check(a);
   check(b);
   const result = clone(a);
+  result.calendarAccounts=mergeCalendarAccounts(a.calendarAccounts,b.calendarAccounts);
   for (const key of Object.keys(b.records))
     result.records[key] = heads([
       ...(result.records[key] || []),
@@ -210,6 +214,7 @@ function capture(graph, before, after) {
   const g = clone(graph),
     old = recordMap(before),
     next = recordMap(after);
+  g.calendarAccounts=mergeCalendarAccounts(graph.calendarAccounts,after.calendarAccounts);
   for (const key of new Set([...Object.keys(old), ...Object.keys(next)]))
     if (stable(old[key]) !== stable(next[key])) {
       const previous = g.records[key] || [],
@@ -218,8 +223,14 @@ function capture(graph, before, after) {
         ? previous.filter((v) => stable(v.value) === stable(old[key] ?? null))
         : previous;
       put(g, key, next[key] ?? null, basis);
+      if(next[key]===undefined&&old[key]?.google)g.records[key][0].googleDeletion={entryId:old[key].id,google:clone(old[key].google),origin:old[key].origin||'hplan',at:new Date().toISOString()};
       if (conflicted) g.records[key] = heads([...previous, ...g.records[key]]);
     }
+  for(const [id,deletion]of Object.entries(after.calendarDeletions||{})) {
+    checkGoogleDeletion(deletion,id);const key='entries/'+id;
+    if(next[key]!==undefined)continue;
+    if(!(g.records[key]||[]).some(v=>v.value===null&&stable(v.googleDeletion)===stable(deletion))) {put(g,key,null);g.records[key][0].googleDeletion=clone(deletion);}
+  }
   return g;
 }
 function conflicts(g) {
@@ -235,9 +246,12 @@ function rawProject(g, local) {
       "서로 다른 수정 내용이 있습니다. 설정에서 동기화 충돌을 확인해 주세요.",
     );
   const state = clone(local);
+  state.calendarAccounts=mergeCalendarAccounts(local.calendarAccounts,g.calendarAccounts);
+  state.calendarDeletions={};
   for (const c of COLLECTIONS) state[c] = [];
   for (const key of Object.keys(g.records).sort()) {
     const value = g.records[key][0].value;
+    if(value===null)for(const version of g.records[key])if(version.googleDeletion)state.calendarDeletions[version.googleDeletion.entryId]=clone(version.googleDeletion);
     if (value !== null)
       state[key.slice(0, key.indexOf("/"))].push(clone(value));
   }
@@ -310,14 +324,29 @@ function resolve(graph, key, revision) {
     throw Error("선택한 변경 내용이 없습니다. 목록을 새로 확인해 주세요.");
   const g = clone(graph);
   put(g, key, selected.value);
+  if(selected.googleDeletion)g.records[key][0].googleDeletion=clone(selected.googleDeletion);
   return g;
 }
 function contentEqual(a, b) {
-  return COLLECTIONS.every(
+  return stable(a.calendarAccounts||{})===stable(b.calendarAccounts||{}) && stable(a.calendarDeletions||{})===stable(b.calendarDeletions||{}) && COLLECTIONS.every(
     (c) =>
       stable([...(a[c] || [])].sort((x, y) => x.id.localeCompare(y.id))) ===
       stable([...(b[c] || [])].sort((x, y) => x.id.localeCompare(y.id))),
   );
+}
+function checkCalendarAccounts(accounts) {
+  if(accounts===undefined)return;
+  if(!accounts||typeof accounts!=='object'||Array.isArray(accounts)||Object.keys(accounts).length>100)throw Error('캘린더 계정 기준이 올바르지 않습니다.');
+  for(const [id,value] of Object.entries(accounts))if(!/^[A-Za-z0-9_.@:-]{1,200}$/.test(id)||['__proto__','constructor','prototype'].includes(id)||!value||!dateOK(value.cutoff)||!value.cutoff.endsWith('-01'))throw Error('캘린더 최초 연결 기준이 올바르지 않습니다.');
+}
+function checkGoogleDeletion(value,id) {
+  const google=value?.google;
+  if(!safeId(id)||value.entryId!==id||!['hplan','google'].includes(value.origin)||typeof value.at!=='string'||!Number.isFinite(Date.parse(value.at))||!google||!['calendar','tasks'].includes(google.service)||typeof google.id!=='string'||!google.id||google.id.length>2048||typeof google.accountId!=='string'||!google.accountId||google.accountId.length>200||typeof(google.service==='calendar'?google.calendarId:google.taskListId)!=='string')throw Error('Google 삭제 연결 정보가 올바르지 않습니다.');
+}
+function mergeCalendarAccounts(a,b) {
+  checkCalendarAccounts(a);checkCalendarAccounts(b);const result=clone(a||{});
+  for(const [key,value] of Object.entries(b||{}))result[key]={cutoff:result[key]?[result[key].cutoff,value.cutoff].sort()[0]:value.cutoff};
+  return result;
 }
 export {
   empty,

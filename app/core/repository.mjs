@@ -293,6 +293,29 @@ export class Repository {
       return r;
     });
   }
+  calendarMeta(account = this.record.activeAccount) {
+    return clone(this.record.calendarLinks?.[account] || {});
+  }
+  saveCalendarMeta(account, value) {
+    return this.update(r => {
+      if(r.activeAccount !== account)throw Error('Google 연결이 변경되었습니다.');
+      r.calendarLinks ||= {};
+      r.calendarLinks[account] = clone(value);
+      return r;
+    });
+  }
+  applyCalendar(account, next, { basis, reason = 'calendar-sync' } = {}) {
+    return this.update(r => {
+      if(r.activeAccount !== account)throw Error('Google 연결이 변경되었습니다.');
+      if(basis && model.stable(r.state) !== model.stable(basis))throw Object.assign(Error('새 수정 사항을 보호하기 위해 Calendar 동기화를 다시 시도합니다.'),{code:'STALE_STATE'});
+      validateState(clone(next));
+      if(model.stable(r.state) === model.stable(next))return r;
+      addBackup(r, 'before-' + reason);
+      r.state = clone(next);
+      capture(r);
+      return r;
+    });
+  }
   syncMeta(account = this.record.activeAccount) {
     return account ? this.record.accounts[account] : null;
   }
