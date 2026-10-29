@@ -306,8 +306,15 @@ class CalendarSync {
       // A fresh field merge protects typing that happened during HTTP requests.
       const latest=localProjection(target,s.projects),newer=mergeFields(local,latest,merged,at);
       writeProjection(target,newer.merged,s.projects);
-      target.google={...target.google,calendarColor:this.ledger.colors?.[link.calendarId]||target.google.calendarColor||null,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:{...conflicts,...newer.conflicts},deleted:false};
-      if(!same(e,target))target.updatedAt=at;
+      const pending={...conflicts,...newer.conflicts};
+      for(const [field,conflict]of Object.entries(pending)){
+        const previous=target.google?.conflicts?.[field];
+        if(previous&&same({...previous,at:null},{...conflict,at:null}))conflict.at=previous.at;
+      }
+      target.google={...target.google,calendarColor:this.ledger.colors?.[link.calendarId]||target.google.calendarColor||null,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:pending,deleted:false};
+      // API caches and ETags must persist, without looking like a content edit
+      // on every device that independently observes the same Google resource.
+      if(!same({...e,google:null,updatedAt:null},{...target,google:null,updatedAt:null}))target.updatedAt=at;
     });
     const latest=(await this.getState()).entries.find(x=>x.id===id);if(latest)this.ledger.links[id]={...clone(latest.google),origin:latest.origin};
     return synced;

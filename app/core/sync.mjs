@@ -18,7 +18,7 @@ export class SyncController {
       root: this.root,
       lastSync: m?.lastSync,
       lastBackupDay: m?.lastBackupDay,
-      pending: !!m && m.uploaded !== model.stable(m.graph.records),
+      pending: !!m && m.uploaded !== model.fingerprint(m.graph),
       conflictCount: m ? model.conflicts(m.graph).length : 0,
       repairCount: m ? model.repairs(m.graph, this.repo.state).length : 0,
     };
@@ -60,9 +60,9 @@ export class SyncController {
       if (!this.active() || this.editing) return this.status();
       const meta = this.repo.syncMeta(this.account),
         outgoing = clone(meta.graph),
-        serialized = model.stable(outgoing.records);
+        serialized = model.fingerprint(outgoing);
       const own = files.find((f) => f.data.deviceId === outgoing.deviceId);
-      if (!own || model.stable(own.data.records) !== serialized)
+      if (!own || model.fingerprint(own.data) !== serialized)
         await this.client.writeSnapshot(layout, outgoing, files);
       if (!this.active()) return this.status();
       const day = new Date().toISOString().slice(0, 10);

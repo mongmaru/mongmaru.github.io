@@ -12,12 +12,22 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
  }};
 }
 export class CalendarIntegration {
- constructor({repo,getAuth,isEditing,onStatus=()=>{},createClient=options=>new CalendarClient(options)}){Object.assign(this,{repo,getAuth,isEditing,onStatus,createClient});this.now=Date.now;this.attempts=new Map();this.taskSignatures=new Map();this.state={busy:false,error:null,lastSyncAt:null,services:{},account:null};}
+ constructor({repo,getAuth,isEditing,onStatus=()=>{},createClient=options=>new CalendarClient(options)}){Object.assign(this,{repo,getAuth,isEditing,onStatus,createClient});this.now=Date.now;this.attempts=new Map();this.taskSignatures=new Map();this.calendarSignatures=new Map();this.state={busy:false,error:null,lastSyncAt:null,services:{},account:null};}
  options(){return this.repo.record.calendarOptions?.[this.repo.record.activeAccount]||{enabled:false,tasks:false,calendarIds:['primary']};}
  async configure(value){const account=this.repo.record.activeAccount;if(!account)throw Error('Google 계정을 먼저 연결해 주세요.');await this.repo.update(r=>{r.calendarOptions||={};r.calendarOptions[account]={...this.options(),...value};return r;});}
- get status(){const options=this.options(),auth=this.getAuth(),permissions=permissionState(auth),account=this.repo.record.activeAccount,saved=options.serviceStatus||{},current=this.state.account===account?this.state:{busy:false,services:{}};return {...current,...options,permissions,connected:!!auth?.connected,services:Object.fromEntries(['calendar','tasks'].map(feature=>{const details={...saved[feature],...current.services?.[feature]},enabled=feature==='calendar'?options.enabled:options.tasks;return [feature,{...details,...featureState({connected:!!auth?.connected,enabled,granted:permissions[feature],offline:typeof navigator!=='undefined'&&navigator.onLine===false,busy:current.busy&&current.active?.[feature]&&enabled&&permissions[feature],...details})}];})),conflicts:this.repo.state.entries.filter(e=>e.google?.accountId===account&&e.google?.conflicts&&Object.keys(e.google.conflicts).length)};}
+ get status(){
+  const options=this.options(),auth=this.getAuth(),permissions=permissionState(auth),account=this.repo.record.activeAccount,saved=options.serviceStatus||{},current=this.state.account===account?this.state:{busy:false,services:{}};
+  const conflicts=this.repo.state.entries.filter(e=>e.google?.accountId===account&&e.google?.conflicts&&Object.keys(e.google.conflicts).length);
+  return {...current,...options,permissions,connected:!!auth?.connected,services:Object.fromEntries(['calendar','tasks'].map(feature=>{
+   const details={...saved[feature],...current.services?.[feature]},enabled=feature==='calendar'?options.enabled:options.tasks,count=conflicts.filter(e=>e.google.service===feature).length;
+   let view=featureState({connected:!!auth?.connected,enabled,granted:permissions[feature],offline:typeof navigator!=='undefined'&&navigator.onLine===false,busy:current.busy&&current.active?.[feature]&&enabled&&permissions[feature],...details});
+   if(count&&view.code==='connected')view={code:'conflict',label:'수정 내용 확인 필요'};
+   return [feature,{...details,...view,enabled,conflicts:count}];
+  })),conflicts};
+ }
  client(){const auth=this.getAuth(),account=this.repo.record.activeAccount,current=()=>auth===this.getAuth()&&this.repo.record.activeAccount===account;return this.createClient({fetch:googleTransport(auth,current),accessToken:(force=false)=>{if(!current())throw Error('Google 연결이 변경되었습니다.');return auth.token(force);}});}
  async calendars(){const result=await this.client().listCalendars();return result.items.filter(c=>['owner','writer'].includes(c.accessRole));}
+ calendarSignature(account){const state=this.repo.state;return JSON.stringify([state.projects.map(p=>[p.id,p.name]),state.entries.filter(e=>!e.google||e.google.service==='calendar'&&e.google.accountId===account).map(e=>{const {google,updatedAt,createdAt,...value}=e;return [value,google?[google.service,google.accountId,google.calendarId,google.id,google.deleted,google.generation]:null];}),Object.entries(state.calendarDeletions||{}).filter(([,v])=>v.google?.accountId===account&&v.google.service==='calendar')]);}
  taskSignature(account){return JSON.stringify([this.repo.state.entries.filter(e=>e.google?.accountId===account&&e.google.service==='tasks').map(e=>[e.id,e.text,e.notes,e.dueDate,e.status,e.deletedAt]),Object.entries(this.repo.state.calendarDeletions||{}).filter(([,v])=>v.google?.accountId===account&&v.google.service==='tasks')]);}
  async run({reason='manual'}={}){
   if(this.running)return this.running;
@@ -26,17 +36,18 @@ export class CalendarIntegration {
   const options=this.options(),permissions=permissionState(auth),active={calendar:options.enabled&&permissions.calendar,tasks:options.tasks&&permissions.tasks};
   const elapsed=feature=>this.now()-(this.attempts.get(account+':'+feature)||0);
   if(reason==='idle'){active.calendar&&=elapsed('calendar')>=5*60000;active.tasks&&=elapsed('tasks')>=15*60000;}
-  if(reason==='local')active.tasks&&=this.taskSignatures.get(account)!==this.taskSignature(account);
+  if(reason==='local'){active.tasks&&=this.taskSignatures.get(account)!==this.taskSignature(account);active.calendar&&=this.calendarSignatures.get(account)!==this.calendarSignature(account);}
   if(!active.calendar&&!active.tasks){this.onStatus();return;}
+  const observed={calendar:this.calendarSignature(account),tasks:this.taskSignature(account)};
   this.engine=new CalendarSync({now:()=>new Date(this.now()),client:this.client(),accountId:account,getState:()=>this.repo.state,allowed,commit:(next,meta)=>this.repo.applyCalendar(account,next,meta),loadLinkState:()=>this.repo.calendarMeta(account),saveLinkState:(_,next)=>this.repo.saveCalendarMeta(account,next),calendarIds:active.calendar?(options.calendarIds||['primary']):[],tasks:!!active.tasks});
   for(const feature of ['calendar','tasks'])if(active[feature])this.attempts.set(account+':'+feature,this.now());
   this.state={...this.state,active,account,busy:true,error:null,services:options.serviceStatus||{}};this.onStatus();
   this.running=(async()=>{try{
     const result=await this.engine.run(),attempt=result.lastAttemptAt||new Date().toISOString(),services={...this.state.services};
     for(const feature of ['calendar','tasks'])if(active[feature]){const errors=(result.errors||[]).filter(e=>feature==='calendar'?String(e.service).startsWith('calendar'):e.service==='tasks');services[feature]={...services[feature],lastAttempt:attempt,error:describeErrors(errors)||null,...(!errors.length?{lastSuccess:attempt}:{})};}
-    if(allowed()){if(active.tasks&&!result.errors?.some(e=>e.service==='tasks'))this.taskSignatures.set(account,this.taskSignature(account));this.state={...this.state,...result,services,error:result.errors?.length?describeErrors(result.errors):null};await this.configure({serviceStatus:services});}return result;
+    if(allowed()){if(active.calendar&&!result.errors?.some(e=>String(e.service).startsWith('calendar')))this.calendarSignatures.set(account,observed.calendar);if(active.tasks&&!result.errors?.some(e=>e.service==='tasks'))this.taskSignatures.set(account,observed.tasks);this.state={...this.state,...result,services,error:result.errors?.length?describeErrors(result.errors):null};await this.configure({serviceStatus:services});}return result;
    }catch(e){if(allowed()){this.state.error=e.message;for(const feature of ['calendar','tasks'])if(active[feature])this.state.services[feature]={...this.state.services[feature],error:e.message,lastAttempt:new Date().toISOString()};}throw e;}finally{this.state.busy=false;this.running=null;this.onStatus();}})();
   return this.running;
  }
- async resolve(id,field,choice){if(!this.engine)await this.run();if(!this.engine)throw Error('Calendar를 먼저 동기화해 주세요.');return this.engine.resolve(id,field,choice);}
+ async resolve(id,field,choice){if(!this.engine)await this.run();if(!this.engine)throw Error('Calendar를 먼저 동기화해 주세요.');const account=this.repo.record.activeAccount,feature=this.repo.state.entries.find(e=>e.id===id)?.google?.service;const result=await this.engine.resolve(id,field,choice);if(feature==='tasks')this.taskSignatures.delete(account);else this.calendarSignatures.delete(account);return result;}
 }

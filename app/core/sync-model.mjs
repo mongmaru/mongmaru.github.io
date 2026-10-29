@@ -8,11 +8,25 @@ const safeId = (x) =>
   /^[A-Za-z0-9_.:-]{1,160}$/.test(x) &&
   !["__proto__", "constructor", "prototype"].includes(x);
 const stable = (x) => JSON.stringify(sort(x));
-const comparable = (value) => {
-  if (value?.seriesId && !value.seriesEdited) {
+const comparable = (value, key) => {
+  if (value && key.startsWith("entries/")) {
     const copy = clone(value);
+    // Save/import times are observations, not independent planner edits.
+    // Keep immutable version heads/clocks; equivalence only controls review.
     delete copy.createdAt;
     delete copy.updatedAt;
+    if (copy.google) {
+      delete copy.google.etag;
+      delete copy.google.resource;
+      delete copy.google.calendarColor;
+      // First export and later import express the initial live link differently.
+      if (copy.google.generation === 0) delete copy.google.generation;
+      if (copy.google.deleted === false) delete copy.google.deleted;
+      // The baseline and Google identity affect safe three-way reconciliation.
+      // Retain them, and retain every unresolved field value, only omit its time.
+      for (const conflict of Object.values(copy.google.conflicts || {}))
+        if (conflict && typeof conflict === "object") delete conflict.at;
+    }
     return stable(copy);
   }
   return stable(value);
@@ -218,7 +232,7 @@ function capture(graph, before, after) {
   for (const key of new Set([...Object.keys(old), ...Object.keys(next)]))
     if (stable(old[key]) !== stable(next[key])) {
       const previous = g.records[key] || [],
-        conflicted = new Set(previous.map((v) => comparable(v.value))).size > 1;
+        conflicted = new Set(previous.map((v) => comparable(v.value, key))).size > 1;
       const basis = conflicted
         ? previous.filter((v) => stable(v.value) === stable(old[key] ?? null))
         : previous;
@@ -236,7 +250,7 @@ function capture(graph, before, after) {
 function conflicts(g) {
   check(g);
   return Object.entries(g.records)
-    .filter(([, vs]) => new Set(vs.map((v) => comparable(v.value))).size > 1)
+    .filter(([key, vs]) => new Set(vs.map((v) => comparable(v.value, key))).size > 1)
     .map(([key, versions]) => ({ key, versions: clone(versions) }));
 }
 function rawProject(g, local) {
@@ -334,6 +348,10 @@ function contentEqual(a, b) {
       stable([...(b[c] || [])].sort((x, y) => x.id.localeCompare(y.id))),
   );
 }
+function fingerprint(graph) {
+  // Account cutoffs are shared state even when no record revision changes.
+  return stable({ records: graph.records, calendarAccounts: graph.calendarAccounts || {} });
+}
 function checkCalendarAccounts(accounts) {
   if(accounts===undefined)return;
   if(!accounts||typeof accounts!=='object'||Array.isArray(accounts)||Object.keys(accounts).length>100)throw Error('캘린더 계정 기준이 올바르지 않습니다.');
@@ -359,6 +377,7 @@ export {
   repairs,
   repair,
   contentEqual,
+  fingerprint,
   stable,
   COLLECTIONS,
 };

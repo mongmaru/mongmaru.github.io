@@ -121,10 +121,10 @@ export function projectForm(state, p = {}) {
 export function folderForm(state, f = {}) {
   return `<div class="stack">${field("폴더 이름", "name", f.name || "", "text", 'required maxlength="80"')}<div><p class="section-title">포함할 프로젝트</p>${state.projects.map((p) => checkbox(p.name, "project:" + p.id, p.folderId === f.id)).join("") || '<p class="help">프로젝트를 먼저 만들면 폴더에 정리할 수 있습니다.</p>'}</div></div>`;
 }
-export function readableVersion(v, key) {
+export function readableVersion(v, key, state={projects:[]}) {
   if (v.value === null) return "<p>항목 영구 삭제</p>";
   const x = v.value;
-  return `<strong>${esc(x.text || x.name || key)}</strong>${x.status ? `<p>상태: ${esc(statusLabels[x.status] || x.status)}</p>` : ""}${x.date ? `<p>${esc(x.date)}</p>` : ""}${[
+  return `<strong>${esc(x.text || x.name || key)}</strong>${x.status ? `<p>상태: ${esc(statusLabels[x.status] || x.status)}</p>` : ""}${x.date ? `<p>${esc(x.date)}${x.endDate?' ~ '+esc(x.endDate):''}${x.allDay===false?' · '+esc(x.startTime)+'–'+esc(x.endTime):''}</p>` : ""}${x.projectId?`<p>프로젝트: ${esc(state.projects.find(p=>p.id===x.projectId)?.name||'연결된 프로젝트')}</p>`:''}${x.dueDate?`<p>마감: ${esc(x.dueDate)}</p>`:''}${x.eventColorId?`<p>일정 색상: ${esc(x.eventColorId)}</p>`:''}${x.recurrenceRule?`<p>반복: ${esc(x.recurrenceRule)}</p>`:''}${[
     "notes",
     "answer",
     "target",

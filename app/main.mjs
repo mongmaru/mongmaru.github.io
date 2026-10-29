@@ -11,6 +11,9 @@ import { NativeBridge } from './native-bridge.mjs';
 import { AppNotifications } from './notifications.mjs';
 import { googlePanel } from './google-ui.mjs';
 import {permissionState} from './google-permissions.mjs';
+import {AutomaticSync} from './auto-sync.mjs';
+import {syncLabel} from './sync-status.mjs';
+import {renderDriveConflicts} from './conflict-ui.mjs';
 import { expandEntries } from './core/calendar-recurrence.mjs';
 import {
   GOOGLE_WEB_CLIENT_ID,
@@ -39,8 +42,7 @@ import {
   adaptEntryForm,
   projectForm,
   folderForm,
-  readableVersion,
-} from "./forms.mjs";
+  } from "./forms.mjs";
 const $ = (s) => document.querySelector(s),
   main = $("#main"),
   modal = $("#modal"),
@@ -242,6 +244,7 @@ function render() {
   else if (route === "overview") overview();
   else settings();
   renderNotice();
+  renderSyncStatus();
 }
 function entryCard(e, { showDate = false } = {}) {
   const p = getProject(e.projectId),
@@ -442,9 +445,9 @@ function overview() {
 }
 function driveCard() {
   const connected = authConnected() && permissionState(auth).drive,
-    status = sync?.status(),
+    status = sync?.status() || {lastSync:repo.syncMeta()?.lastSync,conflictCount:repo.syncMeta()?model.conflicts(repo.syncMeta().graph).length:0},
     account = repo.record.activeAccount;
-  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google 연동 · Drive</h2><p class="account">${authConnected() ? esc(auth.account.email) : account ? "연결 갱신 필요" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${authConnected()&&!connected?'<p class="help">Drive 추가 권한이 필요합니다. 다른 Google 기능은 각각의 연결 상태를 따릅니다.</p>':''}${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button(authConnected()?"Drive 권한 연결":"Google 계정으로 연결", "drive-connect", "primary")}${button("연동 관리", "drive-manage")}</div></section>`;
+  return `<section class="panel stack drive-compact"><div class="drive-summary">${icon("cloud")}<div><h2>Google 연동 · Drive</h2><p class="account">${authConnected() ? esc(auth.account.email) : account ? "계정 연결 기억됨" : "기기에만 저장 중"}</p></div><span class="status-dot ${connected ? "" : "off"}"></span></div>${authConnected()&&!connected?'<p class="help">Drive 추가 권한이 필요합니다. 다른 Google 기능은 각각의 연결 상태를 따릅니다.</p>':''}<p class="help" role="status">${esc(syncLabel({connected,connecting,authError:authRefreshError,reauth:auth.requiresReauth,offline:!navigator.onLine,drive:status}))}</p>${status?.error ? `<p class="notice-box">${esc(status.error)}</p>` : ""}<p class="help">${status?.lastSync ? "마지막 동기화 " + esc(new Date(status.lastSync).toLocaleString("ko-KR")) : "기록은 먼저 이 기기에 저장합니다."}</p><div class="drive-actions">${connected ? button(status?.busy ? "동기화 중…" : "지금 동기화", "drive-sync", "primary") : button(authConnected()?"Drive 권한 연결":"Google 계정으로 연결", "drive-connect", "primary")}${button("연결 관리", "drive-manage")}${button(`기기 간 수정 충돌 ${status?.conflictCount||0}개`, "drive-conflicts")}</div></section>`;
 }
 function settings() {
   const s = state().settings,
@@ -474,7 +477,7 @@ function settings() {
     .join(
       "",
     )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`;
-  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge,auth,{connecting}));
+  main.querySelector('.drive-compact')?.insertAdjacentHTML('afterend',googlePanel(calendar,notifications,nativeBridge,auth,{connecting,connectionError:authRefreshError}));
 }
 function renderNotice() {
   const n = $("#notice");
@@ -484,10 +487,17 @@ function renderNotice() {
   } else if (waitingWorker || pendingReload) {
     n.hidden = false;
     n.innerHTML = "새 버전이 준비되었습니다. " + button("업데이트", "update");
+  } else if (sync?.status().conflictCount) {
+    n.hidden=false;
+    n.innerHTML=`기기 간 수정 충돌 ${sync.status().conflictCount}개 · `+button('내용 확인','drive-conflicts');
   } else {
     n.hidden = true;
     n.textContent = "";
   }
+}
+function renderSyncStatus(){
+ if(!repo)return;
+ $('#save-state').textContent=syncLabel({connected:authConnected(),connecting,authError:authRefreshError,reauth:auth.requiresReauth,offline:!navigator.onLine,drive:sync&&!sync.stopped?sync.status():null,services:calendar?.status.services});
 }
 async function editEntry(id = null, preset = {}) {
   const e = id ? getEntry(id) : {},
@@ -671,6 +681,7 @@ function filterForm() {
     { label: "적용", danger: button("초기화", "filter-reset", "ghost") },
   );
 }
+let notifiedConflictSignature='',authRefreshError=false;
 async function runSync(backup = false, quiet = false) {
   if (!sync || sync.stopped) {
     if (!quiet) toast("Google 계정을 먼저 연결해 주세요.");
@@ -695,12 +706,13 @@ async function runSync(backup = false, quiet = false) {
       result = await controller.sync(backup);
     }
     if (sync !== controller) return;
-    if (controller.status().conflictCount)
-      toast("서로 다른 수정 내용이 있습니다. 설정에서 확인해 주세요.");
+    if (controller.status().conflictCount) {
+      const signature=model.conflicts(repo.syncMeta().graph).map(c=>c.key+':'+c.versions.map(v=>v.id).join(',')).join('|');
+      if(signature!==notifiedConflictSignature){notifiedConflictSignature=signature;toast('기기 간 수정 충돌이 있습니다. 상단 ‘내용 확인’에서 비교해 주세요.');}
+    }
     else if (result.completed && !controller.editing)
-      $("#save-state").textContent = controller.status().pending
-        ? "동기화 대기"
-        : "동기화됨";
+      {notifiedConflictSignature='';renderSyncStatus();}
+    renderNotice();
     return result;
   } catch (e) {
     if (sync === controller) {
@@ -744,13 +756,13 @@ async function attachDrive(nextAuth, account, attempt) {
       },
     }),
     onStatus: () => {
+      renderSyncStatus();
       if (route === "settings" && !modal.open) settings();
     },
   });
   sync = controller;
   sync.editing = modal.open;
   render();
-  await runSync(false, true);
 }
 async function restoreDrive() {
   if (
@@ -780,7 +792,10 @@ async function restoreDrive() {
   return restoring;
 }
 let lastDriveAttempt=0;
-async function autoSync(reason='foreground') {
+const automaticSync=new AutomaticSync(performAutoSync);
+function autoSync(reason='foreground'){return automaticSync.request(reason);}
+async function performAutoSync(reason='foreground') {
+  let checkedAuth,checkedGeneration;
   try {
     if (!authConnected() && (!sync || sync.stopped)) {
       await restoreDrive();
@@ -789,15 +804,20 @@ async function autoSync(reason='foreground') {
       // Refresh remembered grants before deciding which service can run. Older
       // device sessions may not contain a cached scope list; never infer consent.
       const session=auth,generation=connectionGeneration;
+      checkedAuth=session;checkedGeneration=generation;
       await session.token();
       if(session!==auth||generation!==connectionGeneration)return;
+      authRefreshError=false;
       if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
       if(sync&&!sync.stopped&&(reason!=='idle'||Date.now()-lastDriveAttempt>=60000)){lastDriveAttempt=Date.now();try{await runSync(false, true);}catch{}}
       if(!modal.open)try{await calendar?.run({reason});}catch{}
       await notifications?.upload();
-      const services=calendar?.status.services||{};if(Object.values(services).some(s=>s.code==='error'))$('#save-state').textContent='일부 연동 확인 필요';
+      renderSyncStatus();
     }
-  } catch {} // A remembered connection and local edits survive transient errors.
+  } catch {
+    // Preserve the grant and records, while making a failed preflight visible.
+    if(!checkedAuth||checkedAuth===auth&&checkedGeneration===connectionGeneration)authRefreshError=true;
+  } finally {renderSyncStatus();if(route==='settings'&&!modal.open)settings();}
 }
 async function connectDrive(features = {}) {
   if (connecting || disconnecting) return;
@@ -835,6 +855,7 @@ async function connectDrive(features = {}) {
     if(features.tasks&&permissions.tasks)changes.tasks=true;
     if(Object.keys(changes).length)await calendar.configure(changes);
     if(features.calendar&&!permissions.calendar||features.tasks&&!permissions.tasks)toast('계정은 연결했습니다. 허용하지 않은 추가 기능은 켜지 않습니다.');
+    await autoSync('online');
     render();
   } finally {
     if (pendingAuth === nextAuth) pendingAuth = null;
@@ -850,12 +871,8 @@ function conflicts() {
   const list = model.conflicts(meta.graph),
     repairs = model.repairs(meta.graph, state());
   modalOpen(
-    "동기화 내용 확인",
-    list.length
-      ? `<p class="help">각 항목에서 유지할 내용을 선택하세요. 원본 내용은 덮어쓰기 전에 기기 백업으로 보관합니다.</p><div class="stack">${list.map((c) => `<section class="panel"><h3>${esc(c.key.split("/")[0])}</h3>${c.versions.map((v) => `<div class="summary" style="margin-top:10px">${readableVersion(v, c.key)}<button type="button" data-action="resolve:${esc(c.key)}:${esc(v.id)}" style="margin-top:10px">이 내용 유지</button></div>`).join("")}</section>`).join("")}</div>`
-      : repairs.length
-        ? `<div class="stack"><p>삭제된 프로젝트·상위 업무 연결 ${repairs.length}개를 정리해야 합니다. 일정 내용은 보존합니다.</p>${repairs.map((r) => `<div class="summary">${esc(r.before.text || r.before.name || r.key)}</div>`).join("")}${button("연결 정리 승인", "drive-repair", "primary")}</div>`
-        : '<p class="empty">확인할 충돌이 없습니다.</p>',
+    "기기 간 수정 충돌 · Drive",
+    renderDriveConflicts(list,repairs,state()),
   );
 }
 function googlePermissionPrompt(feature){
@@ -1548,9 +1565,9 @@ window.visualViewport?.addEventListener("scroll", viewport);
 window.addEventListener("resize", viewport);
 window.addEventListener("online", () => {
   renderNotice();
-  autoSync();
+  autoSync('online');
 });
-window.addEventListener("offline", renderNotice);
+window.addEventListener("offline",()=>{renderNotice();renderSyncStatus();if(route==='settings'&&!modal.open)settings();});
 window.addEventListener("beforeunload", rememberDraft);
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
@@ -1572,12 +1589,12 @@ setInterval(() => {
 }, 60000);
 try {
   repo = await Repository.open(await IndexedStore.open());
-  calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{if(route==='settings'&&!modal.open)settings();}});
+  calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{renderSyncStatus();if(route==='settings'&&!modal.open)settings();}});
   notifications=new AppNotifications({getState:state,getAuth:()=>auth,getNative:()=>nativeBridge,onError:e=>toast(e.message)});
-  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:id=>notifications.acknowledge(id),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
+  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:(id,entryId,startAt)=>notifications.acknowledge(id,startAt),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
   const launch=new URLSearchParams(location.search);
   if(dateOK(launch.get('date')))date=launch.get('date');
-  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt).catch(()=>{});});
+  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt,e.data.sessionId).catch(()=>{});});
   repo.subscribe(() => {
     nativeBridge?.update();
     if (!modal.open) render();
