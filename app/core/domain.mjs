@@ -468,6 +468,7 @@ function apply(s, a) {
         reviewDate: v.reviewDate === undefined ? old?.reviewDate || null : v.reviewDate || null,
         priority: !!v.priority,
         color: v.color ? color(v.color) : null,
+        eventColorId:v.eventColorId===undefined?(old&&Object.hasOwn(old,"eventColorId")?old.eventColorId:old?.google?.resource?.colorId||null):(v.eventColorId===null||v.eventColorId===""?null:(/^(?:[1-9]|10|11)$/.test(String(v.eventColorId))?String(v.eventColorId):null)),
         recurrence:
           ["daily", "weekdays", "weekly", "monthly"].includes(v.recurrence) &&
           kind !== "question" &&

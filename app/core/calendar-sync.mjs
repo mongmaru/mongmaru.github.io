@@ -44,7 +44,7 @@ function entryToEvent(e,projects=[]) {
     start={dateTime:new Date(zonedEpoch(e.date,e.startTime,zone)).toISOString(),timeZone:zone};
     end={dateTime:new Date(zonedEpoch(e.endDate||e.date,e.endTime,zone)).toISOString(),timeZone:zone};
   }
-  return {summary:(projectName?'['+projectName+'] ':'')+e.text,description,start,end,recurrence:recurrenceLines(e),
+  return {colorId:e.eventColorId===undefined?(e.google?.resource?.colorId||null):(e.eventColorId||null),summary:(projectName?'['+projectName+'] ':'')+e.text,description,start,end,recurrence:recurrenceLines(e),
     extendedProperties:{private:{hplanId:e.id,hplanOrigin:e.origin||'hplan',hplanKind:e.kind,hplanStatus:e.status,hplanDueDate:e.dueDate||'',hplanEndDate:e.endDate||'',hplanTimeZone:e.timeZone||'Asia/Seoul',hplanProjectId:e.projectId||'',hplanProjectName:projectName}},
     ...((e.origin||'hplan')==='hplan'?{reminders:{useDefault:false,overrides:[]}}:{}),};
 }
@@ -63,7 +63,7 @@ function eventProjection(event,defaultTimeZone='Asia/Seoul') {
   const endDate=end.date===start.date&&!props.hplanEndDate?null:end.date;
   const lines=event.recurrence||[];
   const exceptions=recurrenceDateValues(lines,'EXDATE',timeZone).filter(dateOK);
-  return {title:event.summary||'(제목 없음)',description:event.description||'',schedule:{date:start.date,endDate,allDay,startTime:start.time,endTime:end.time,timeZone},recurrence:{rule:lines.find(x=>/^RRULE:/.test(x))||null,exceptions,lines:[...lines].sort()},status:props.hplanStatus||'planned',dueDate:dateOK(props.hplanDueDate)?props.hplanDueDate:null};
+  return {eventColor:event.colorId||null,title:event.summary||'(제목 없음)',description:event.description||'',schedule:{date:start.date,endDate,allDay,startTime:start.time,endTime:end.time,timeZone},recurrence:{rule:lines.find(x=>/^RRULE:/.test(x))||null,exceptions,lines:[...lines].sort()},status:props.hplanStatus||'planned',dueDate:dateOK(props.hplanDueDate)?props.hplanDueDate:null};
 }
 function localProjection(e,projects) {
   if(e.google?.service==='tasks')return {title:e.text,description:e.notes||'',dueDate:e.dueDate||null,completed:done(e)};
@@ -71,6 +71,7 @@ function localProjection(e,projects) {
 }
 function writeProjection(e,fields,projects=[]) {
   if(fields.title!==undefined){const name=projects.find(p=>p.id===e.projectId)?.name||e.google?.resource?.extendedProperties?.private?.hplanProjectName;const prefix=name?'['+name+'] ':'';e.text=prefix&&fields.title.startsWith(prefix)?fields.title.slice(prefix.length):fields.title;}
+  if(fields.eventColor!==undefined)e.eventColorId=fields.eventColor;
   if(fields.description!==undefined){if(e.google?.service==='tasks')e.notes=fields.description;else Object.assign(e,splitDescription(fields.description));}
   if(fields.schedule)Object.assign(e,fields.schedule);
   if(fields.recurrence){e.recurrenceRule=fields.recurrence.rule;e.recurrence='none';e.recurrenceExceptions=fields.recurrence.exceptions;e.recurrenceLines=fields.recurrence.lines;}
@@ -126,6 +127,7 @@ function inImportRange(entry,cutoff) {
 }
 function eventPatch(e,desired,remote,conflicts,projects) {
   const event=entryToEvent(e,projects),patch={};
+  if(!conflicts.eventColor&&!same(desired.eventColor,remote.eventColor))patch.colorId=desired.eventColor;
   if(!conflicts.title&&!same(desired.title,remote.title))patch.summary=event.summary;
   if(!conflicts.description&&!same(desired.description,remote.description))patch.description=event.description;
   if(!conflicts.schedule&&!same(desired.schedule,remote.schedule)){patch.start=event.start;patch.end=event.end;}
@@ -167,7 +169,7 @@ class CalendarSync {
     }
     await this.persist();
     if(this.calendarIds.length&&typeof this.client.listCalendars==='function') {
-      try{const list=await this.client.listCalendars();this.ledger.timeZones={...(this.ledger.timeZones||{})};for(const calendar of list.items)if(calendar.timeZone){this.ledger.timeZones[calendar.id]=calendar.timeZone;if(calendar.primary)this.ledger.timeZones.primary=calendar.timeZone;}}
+      try{const list=await this.client.listCalendars();this.ledger.timeZones={...(this.ledger.timeZones||{})};this.ledger.colors||={};for(const calendar of list.items)if(/^#[a-f0-9]{6}$/i.test(calendar.backgroundColor||"")){this.ledger.colors[calendar.id]=calendar.backgroundColor;if(calendar.primary)this.ledger.colors.primary=calendar.backgroundColor;}for(const calendar of list.items)if(calendar.timeZone){this.ledger.timeZones[calendar.id]=calendar.timeZone;if(calendar.primary)this.ledger.timeZones.primary=calendar.timeZone;}}
       catch(error){this.error(error,'calendar-list');}
     }
     for(const calendarId of this.calendarIds)await this.service('calendar',calendarId);
@@ -285,7 +287,7 @@ class CalendarSync {
       await this.change(s=>{apply(s,{type:'entry.delete',ids:[id],scope:!e.seriesId&&isRecurring(e)?'all':undefined,occurrenceDate:e.date});const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return;
     }
     const remote=link.service==='tasks'?taskProjection(resource):eventProjection(resource,this.ledger.timeZones?.[link.calendarId]||e.timeZone),local=localProjection(e,state.projects),at=new Date(this.now()).toISOString();
-    const {merged,conflicts}=mergeFields(link.base||remote,local,remote,at);
+    const {merged,conflicts}=mergeFields({...remote,...(link.base||{}),...(link.base&&!Object.hasOwn(link.base,"eventColor")?{eventColor:link.resource?.colorId||null}:{})},local,remote,at);
     const updated=clone(e);updated.google={...link,resource:clone(resource),etag:resource.etag||link.etag};writeProjection(updated,merged,state.projects);
     let patch={};
     if(link.service==='tasks') {
@@ -304,7 +306,7 @@ class CalendarSync {
       // A fresh field merge protects typing that happened during HTTP requests.
       const latest=localProjection(target,s.projects),newer=mergeFields(local,latest,merged,at);
       writeProjection(target,newer.merged,s.projects);
-      target.google={...target.google,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:{...conflicts,...newer.conflicts},deleted:false};
+      target.google={...target.google,calendarColor:this.ledger.colors?.[link.calendarId]||target.google.calendarColor||null,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:{...conflicts,...newer.conflicts},deleted:false};
       if(!same(e,target))target.updatedAt=at;
     });
     const latest=(await this.getState()).entries.find(x=>x.id===id);if(latest)this.ledger.links[id]={...clone(latest.google),origin:latest.origin};

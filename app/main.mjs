@@ -1,3 +1,4 @@
+import {eventColors} from './event-colors.mjs';
 import { Repository, IndexedStore } from "./core/repository.mjs";
 import { today, clone, dateOK, expandRecurrences } from "./core/domain.mjs";
 import * as model from "./core/sync-model.mjs";
@@ -297,9 +298,9 @@ function planner() {
           ? first
           : shiftDay(first, -new Date(first + "T12:00:00Z").getUTCDay()),
       count = calendarMode === "week" ? 7 : 42;
-    const counts = new Map();
+    const counts = new Map(),dayEntries=new Map();
     for (const e of expandEntries(activeEntries(),start,shiftDay(start,count-1)))
-      for(let day=e.date>start?e.date:start;day<=(e.endDate||e.date)&&day<=shiftDay(start,count-1);day=shiftDay(day,1))counts.set(day,(counts.get(day)||0)+1);
+      for(let day=e.date>start?e.date:start;day<=(e.endDate||e.date)&&day<=shiftDay(start,count-1);day=shiftDay(day,1)){counts.set(day,(counts.get(day)||0)+1);if(!dayEntries.has(day))dayEntries.set(day,[]);dayEntries.get(day).push(e);}
     calendar = `<div class="calendar" ${state().settings.hideWeekends ? 'style="grid-template-columns:repeat(5,minmax(0,1fr))"' : ""}>${[
       "일",
       "월",
@@ -320,7 +321,7 @@ function planner() {
         [0, 6].includes(new Date(day + "T12:00:00Z").getUTCDay())
       )
         return "";
-      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="day-dots">${Array.from({ length: Math.min(n, 3) }, () => '<i class="dot"></i>').join("")}</span></button>`;
+      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="mobile-day-items">${(dayEntries.get(day)||[]).slice(0,4).map(e=>`<span class="mobile-day-item" style="border-inline-start-color:${esc(eventColors.find(c=>c[0]===e.eventColorId)?.[2]||(/^#[a-f0-9]{6}$/i.test(e.google?.calendarColor||'')?e.google.calendarColor:null)||getProject(e.projectId)?.color||"#da3543")}" title="${esc(e.text)}">${esc(e.text)}</span>`).join("")}${n>4?`<small>+${n-4}개 더 보기</small>`:""}</span></button>`;
     }).join("")}</div>`;
   }
   const entries = expandEntries(activeEntries(),date,date).filter(

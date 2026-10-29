@@ -1228,3 +1228,5 @@ textarea {
     min-width: 44px;
   }
 }
+
+.timing .form-grid{align-items:end}.timing .form-grid>label:has(input[name=allDay]){min-height:40px;display:flex;align-items:center;gap:8px}.mobile-day-items{display:flex;flex-direction:column;gap:2px;width:100%;min-width:0}.mobile-day-item{font-size:10px;line-height:1.45;text-align:start;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-inline-start:2px solid #da3543;padding-inline-start:3px;display:block;max-width:100%}.calendar-day{min-width:0;height:auto;min-height:110px;justify-content:flex-start;gap:3px;overflow:hidden}.mobile-day-items small{font-size:9px;white-space:nowrap}.timing select[name=eventColorId]{min-height:40px}
