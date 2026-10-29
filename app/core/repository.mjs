@@ -51,8 +51,12 @@ export class MemoryStore {
 export class IndexedStore {
   static open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open("hplan-mobile-v1", 1);
-      req.onupgradeneeded = () => req.result.createObjectStore("records");
+      // Version2 closes version1 writers before the first atomic migration.
+      const req = indexedDB.open("hplan-mobile-v1", 2);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains("records"))
+          req.result.createObjectStore("records");
+      };
       req.onsuccess = () => resolve(new IndexedStore(req.result));
       req.onerror = () =>
         reject(
@@ -66,16 +70,56 @@ export class IndexedStore {
   }
   constructor(db) {
     this.db = db;
+    this.snapshots = new Map();
+    this.snapshotKeys = new WeakMap();
     db.onversionchange = () => db.close();
+  }
+  hydrate(store, raw, ready, fail) {
+    if (!raw?.historyRefs) return ready(raw || null, new Set());
+    const { historyRefs, ...record } = raw;
+    const fields = ["past", "future", "backups"];
+    if (historyRefs.version !== 1 || fields.some(key =>
+      !Array.isArray(historyRefs[key]) || historyRefs[key].some(id =>
+        typeof id !== "string" || !id.startsWith("history:"))))
+      throw Error("기기 내 복구 기록의 저장 형식을 확인할 수 없습니다. 기존 데이터는 유지했습니다.");
+    const keys = new Set(fields.flatMap(key => historyRefs[key]));
+    const finish = () => {
+      for (const key of fields) record[key] = historyRefs[key].map(id => this.snapshots.get(id));
+      ready(record, keys);
+    };
+    const missing = [...keys].filter(id => !this.snapshots.has(id));
+    if (!missing.length) return finish();
+    let pending = missing.length;
+    for (const id of missing) {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        try {
+          if (!request.result || typeof request.result !== "object")
+            throw Error("기기 내 복구 기록을 읽지 못했습니다. 기존 데이터는 유지했습니다.");
+          const value = freezeSnapshot(request.result);
+          this.snapshots.set(id, value);
+          this.snapshotKeys.set(value, id);
+          if (!--pending) finish();
+        } catch (error) { fail(error); }
+      };
+    }
+  }
+  trimSnapshots(keys) {
+    for (const id of this.snapshots.keys())
+      if (!keys.has(id)) this.snapshots.delete(id);
   }
   read() {
     return new Promise((resolve, reject) => {
-      const req = this.db
-        .transaction("records")
-        .objectStore("records")
-        .get("main");
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
+      const tx = this.db.transaction("records"), store = tx.objectStore("records"),
+        request = store.get("main");
+      let data, keys, error;
+      const fail = reason => { error ||= reason; try { tx.abort(); } catch {} };
+      request.onsuccess = () => {
+        try { this.hydrate(store, request.result, (value, ids) => { data = value; keys = ids; }, fail); }
+        catch (reason) { fail(reason); }
+      };
+      tx.oncomplete = () => { this.trimSnapshots(keys); resolve(data); };
+      tx.onabort = tx.onerror = () => reject(error || tx.error || Error("기기 내 기록을 읽지 못했습니다."));
     });
   }
   transact(fn) {
@@ -83,17 +127,56 @@ export class IndexedStore {
       const tx = this.db.transaction("records", "readwrite"),
         store = tx.objectStore("records"),
         req = store.get("main");
-      let data, error;
-      req.onsuccess = () => {
+      let data, keys, error;
+      const added = new Map();
+      const fail = reason => { error ||= reason; try { tx.abort(); } catch {} };
+      const write = (raw, previousKeys) => {
         try {
-          data = fn(req.result || null);
-          store.put(data, "main");
-        } catch (e) {
-          error = e;
-          tx.abort();
-        }
+          const next = fn(raw), { past = [], future = [], backups = [], ...current } = next;
+          // Only current state/account metadata is cloned each commit. Recovery
+          // bodies are immutable, independent snapshots; their array containers
+          // remain fresh so push/pop/slice and aborted callbacks cannot leak.
+          data = clone(current);
+          const historyRefs = { version: 1 }, encoded = new Map();
+          keys = new Set();
+          for (const [field, values] of Object.entries({ past, future, backups })) {
+            data[field] = [];
+            historyRefs[field] = values.map(value => {
+              if (!value || typeof value !== "object")
+                throw Error("기기 내 복구 기록의 저장 형식이 올바르지 않습니다.");
+              let item = encoded.get(value);
+              if (!item) {
+                const oldKey = this.snapshotKeys.get(value);
+                if (oldKey && previousKeys.has(oldKey)) item = { id: oldKey, value };
+                else {
+                  const id = "history:" + crypto.randomUUID(), snapshot = freezeSnapshot(clone(value));
+                  store.put(snapshot, id);
+                  added.set(id, snapshot);
+                  item = { id, value: snapshot };
+                }
+                encoded.set(value, item);
+              }
+              data[field].push(item.value);
+              keys.add(item.id);
+              return item.id;
+            });
+          }
+          store.put({ ...current, historyRefs }, "main");
+          for (const id of previousKeys) if (!keys.has(id)) store.delete(id);
+        } catch (reason) { fail(reason); }
       };
-      tx.oncomplete = () => resolve(clone(data));
+      req.onsuccess = () => {
+        try { this.hydrate(store, req.result, write, fail); }
+        catch (reason) { fail(reason); }
+      };
+      tx.oncomplete = () => {
+        for (const [id, value] of added) {
+          this.snapshots.set(id, value);
+          this.snapshotKeys.set(value, id);
+        }
+        this.trimSnapshots(keys);
+        resolve(data);
+      };
       tx.onabort = tx.onerror = () =>
         reject(
           error ||
@@ -103,6 +186,13 @@ export class IndexedStore {
         );
     });
   }
+}
+function freezeSnapshot(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const key of Object.keys(value)) freezeSnapshot(value[key]);
+    Object.freeze(value);
+  }
+  return value;
 }
 function addBackup(record, label) {
   record.backups.unshift({
@@ -220,7 +310,7 @@ export class Repository {
     return this.update((r) => {
       if (r.past.length) {
         r.future.push(clone(r.state));
-        r.state = r.past.pop();
+        r.state = clone(r.past.pop());
         capture(r);
       }
       return r;
@@ -230,7 +320,7 @@ export class Repository {
     return this.update((r) => {
       if (r.future.length) {
         r.past.push(clone(r.state));
-        r.state = r.future.pop();
+        r.state = clone(r.future.pop());
         capture(r);
       }
       return r;

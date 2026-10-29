@@ -1,3 +1,4 @@
+import {eventColors} from './event-colors.mjs';
 import {
   esc,
   field,
@@ -36,8 +37,9 @@ export function entryForm(state, date, entry = {}, preset = {}) {
  ${field("마감일", "dueDate", e.dueDate || "", "date")}${field("재확인 날짜", "reviewDate", e.reviewDate || "", "date")}
  ${timingForm(e)}
  ${select("상위 업무", "parentId", [["", "상위 업무 없음"], ...state.entries.filter((x) => !x.deletedAt && !x.parentId && x.id !== e.id && x.date === e.date && x.kind === e.kind && (x.projectId || null) === (e.projectId || null)).map((x) => [x.id, x.text.slice(0, 45)])], e.parentId || "")}
- ${field("글자 강조 색상", "color", e.color || "#C9232C", "color")}
- <div class="full row">${checkbox("중요 표시", "priority", e.priority)}${checkbox("강조 색상 사용", "useColor", !!e.color)}</div>
+
+ ${select('일정 색상','eventColorId',eventColors.map(([id,name])=>[id,name]),e.eventColorId??e.google?.resource?.colorId??'')}<p class="help">일정 앞의 색상 막대에 적용됩니다. Google Calendar와 같은 색상을 사용합니다.</p>
+ <div class="full row">${checkbox("중요 표시", "priority", e.priority)}</div>
  ${area("메모", "notes", e.notes || "", "full")}${field("확인 대상", "target", e.target || "")}
  <div class="full">${area("답변", "answer", e.answer || "")}</div></div>`;
 }
@@ -57,7 +59,7 @@ export function entryValue(form, entry = {}) {
     recurrenceUntil: get("recurrenceUntil") || null,
     parentId: get("parentId") || null,
     priority: f.has("priority"),
-    color: f.has("useColor") ? get("color") : null,
+    color: form.dataset.colorChanged==='true'?null:entry.color||null,
     notes: get("notes"),
     target: get("target"),
     answer: get("answer"),

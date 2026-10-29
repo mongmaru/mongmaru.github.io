@@ -1,4 +1,7 @@
-import {eventColors} from './event-colors.mjs';
+import {entryColor} from './event-colors.mjs';
+import {adaptTiming as adaptTimingOnly} from './calendar-form.mjs';
+import {draftData,draftSignature} from './drafts.mjs';
+import {validateForm,showFormErrors,clearFormErrors} from './form-feedback.mjs';
 import { Repository, IndexedStore } from "./core/repository.mjs";
 import { today, clone, dateOK, expandRecurrences } from "./core/domain.mjs";
 import * as model from "./core/sync-model.mjs";
@@ -135,6 +138,7 @@ function modalOpen(
   $("#modal-title").textContent = title;
   body.innerHTML = html;
   form.onchange = null;
+  form.noValidate = true;
   footer.innerHTML =
     (danger ? danger : "") +
     (onSave
@@ -146,7 +150,7 @@ function modalOpen(
   modal.showModal();
   if (sync) sync.editing = true;
   body.scrollTop = 0;
-  draftInitial = new URLSearchParams(new FormData(form)).toString();
+  draftInitial = draftSignature(form);
   setTimeout(() => {
     const target = body.querySelector(
       "input:not([type=checkbox]):not([type=color]),textarea,select",
@@ -155,49 +159,25 @@ function modalOpen(
     else $("#modal-close").focus();
   }, 0);
 }
+let draftTimer;
 function rememberDraft() {
-  if (!draftKey) return;
-  try {
-    const data = {
-      at: new Date().toISOString(),
-      values: Object.fromEntries(new FormData(form)),
-      checked: Object.fromEntries(
-        [...form.querySelectorAll("input[type=checkbox]")].map((x) => [
-          x.name,
-          x.checked,
-        ]),
-      ),
-    };
-    localStorage.setItem(
-      "hplan-draft",
-      JSON.stringify({ key: draftKey, ...data }),
-    );
-  } catch {}
+ clearTimeout(draftTimer);
+ if(!draftKey||draftSignature(form)===draftInitial)return true;
+ try{localStorage.setItem('hplan-draft',JSON.stringify(draftData(form,draftKey)));return true;}catch{return false;}
 }
-function closeModal(force = false) {
-  if (!modal.open) return;
-  if (
-    !force &&
-    draftKey &&
-    new URLSearchParams(new FormData(form)).toString() !== draftInitial &&
-    !confirm("작성 중인 내용을 임시 보관하고 닫을까요?")
-  )
-    return;
-  rememberDraft();
-  modal.close();
-  if (sync) sync.editing = false;
-  scheduleSync();
-  draftKey = null;
-  saveHandler = null;
-  render();
-  lastFocus?.isConnected && lastFocus.focus();
+function finishClose() {
+ clearTimeout(draftTimer);modal.close();if(sync)sync.editing=false;scheduleSync();draftKey=null;saveHandler=null;render();lastFocus?.isConnected&&lastFocus.focus();
 }
-function clearDraft() {
-  try {
-    localStorage.removeItem("hplan-draft");
-  } catch {}
-  draftKey = null;
+function closeModal(force=false) {
+ if(!modal.open||document.querySelector('#draft-choice'))return;
+ if(!force&&draftKey&&draftSignature(form)!==draftInitial){
+  const choice=document.createElement('dialog');choice.id='draft-choice';choice.className='draft-choice';choice.innerHTML='<h2>작성 중인 내용</h2><p>작성 내용을 어떻게 할까요?</p><div class="stack"><button data-choice="continue">계속 작성</button><button data-choice="keep" class="primary">임시 보관하고 닫기</button><button data-choice="discard" class="danger">버리고 닫기</button></div>';document.body.append(choice);
+  choice.addEventListener('cancel',event=>{event.preventDefault();choice.close();choice.remove();});
+  choice.addEventListener('click',event=>{const action=event.target.closest('[data-choice]')?.dataset.choice;if(!action)return;choice.close();choice.remove();if(action==='continue')return;if(action==='keep'){if(!rememberDraft()){toast('임시 보관에 실패했습니다. 저장공간을 확인해 주세요. 작성 내용은 창에 유지됩니다.');return;}}else clearDraft();finishClose();});choice.showModal();return;
+ }
+ rememberDraft();finishClose();
 }
+function clearDraft(){clearTimeout(draftTimer);try{localStorage.removeItem('hplan-draft');}catch{}draftKey=null;}
 async function action(a, message, baseline = null) {
   $("#save-state").textContent = "저장 중…";
   try {
@@ -272,8 +252,8 @@ function entryCard(e, { showDate = false } = {}) {
   const p = getProject(e.projectId),
     complete = ["done", "answered"].includes(e.status),
     sub = e.parentId;
-  return `<article class="entry ${done(e) ? "done" : ""} ${sub ? "child" : ""} ${e.status === "moved" ? "moved" : ""}" data-entry="${esc(e.id)}"><button class="entry-check ${complete ? "checked" : ""}" aria-label="${complete ? "완료 취소" : "완료로 표시"}" data-action="toggle:${esc(e.id)}">${icon(complete ? "check" : "circle")}</button>
- <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" aria-label="${esc(e.text)} 수정"><div class="entry-title" ${/^#[a-f\d]{6}$/i.test(e.color || "") ? `style="color:${esc(e.color)}"` : ""}>${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.allDay===false?`<span>${esc(e.startTime)}–${esc(e.endTime)}</span>`:""}${e.endDate?`<span>기간 ${esc(e.date.slice(5))}–${esc(e.endDate.slice(5))}</span>`:""}${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrenceRule || e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
+  return `<article style="--event-color:${esc(entryColor(e,p))}" class="entry ${done(e) ? "done" : ""} ${sub ? "child" : ""} ${e.status === "moved" ? "moved" : ""}" data-entry="${esc(e.id)}"><button class="entry-check ${complete ? "checked" : ""}" aria-label="${complete ? "완료 취소" : "완료로 표시"}" data-action="toggle:${esc(e.id)}">${icon(complete ? "check" : "circle")}</button>
+ <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" aria-label="${esc(e.text)} 수정"><div class="entry-title" >${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.allDay===false?`<span>${esc(e.startTime)}–${esc(e.endTime)}</span>`:""}${e.endDate?`<span>기간 ${esc(e.date.slice(5))}–${esc(e.endDate.slice(5))}</span>`:""}${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrenceRule || e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
 }
 function ordered(entries) {
   const result = [];
@@ -346,7 +326,7 @@ function planner() {
         [0, 6].includes(new Date(day + "T12:00:00Z").getUTCDay())
       )
         return "";
-      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="mobile-day-items">${(dayEntries.get(day)||[]).slice(0,4).map(e=>`<span class="mobile-day-item" style="border-inline-start-color:${esc(eventColors.find(c=>c[0]===e.eventColorId)?.[2]||(/^#[a-f0-9]{6}$/i.test(e.google?.calendarColor||'')?e.google.calendarColor:null)||getProject(e.projectId)?.color||"#da3543")}" title="${esc(e.text)}">${esc(e.text)}</span>`).join("")}${n>4?`<small>+${n-4}개 더 보기</small>`:""}</span></button>`;
+      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="mobile-day-items">${(dayEntries.get(day)||[]).slice(0,4).map(e=>`<span class="mobile-day-item" style="border-inline-start-color:${esc(entryColor(e,getProject(e.projectId)))}" title="${esc(e.text)}">${esc(e.text)}</span>`).join("")}${n>4?`<small>+${n-4}개 더 보기</small>`:""}</span></button>`;
     }).join("")}</div>`;
   }
   const entries = expandEntries(activeEntries(),date,date).filter(
@@ -498,7 +478,7 @@ function settings() {
     )
     .join(
       "",
-    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`);
+    )}</select></div><div class="setting-row"><div><strong>모션 줄이기</strong></div><input id="setting-reduceMotion" type="checkbox" aria-label="모션 줄이기" ${s.reduceMotion ? "checked" : ""}></div><div class="setting-row"><div><strong>달력에서 주말 숨기기</strong></div><input id="setting-hideWeekends" type="checkbox" aria-label="주말 숨기기" ${s.hideWeekends ? "checked" : ""}></div><div class="setting-row"><div><strong>빈 날짜 안내 간소화</strong></div><input id="setting-hideEmpty" type="checkbox" aria-label="빈 날짜 안내 간소화" ${s.hideEmpty ? "checked" : ""}></div><div class="setting-row"><div><strong>기기 백업 보관 수</strong></div><input id="setting-backupRetention" type="number" min="3" max="180" value="${s.backupRetention}" aria-label="백업 보관 수"></div></div></section><div class="action-list">${button("모아보기 항목 설정", "widgets", "", "grid")}${button("홈 화면에 설치하기", "install", "", "plus")}${button("임시 작성 내용 복구", "draft-restore", "", "note")}${button("임시 작성 내용 삭제", "draft-delete", "", "trash")}${button("사용 안내와 개인정보", "help", "", "help")}</div><p class="help">Windows 자동 시작·창 크기·저장 폴더 선택은 모바일 웹 환경의 설치·기기 저장 기능으로 대체됩니다. Android APK에는 홈 화면 캘린더 위젯이 포함됩니다. 위젯은 Android 홈 화면에서 직접 추가해 주세요.</p></div></div>`);
 }
 function renderNotice() {
   const n = $("#notice");
@@ -541,11 +521,11 @@ async function editEntry(id = null, preset = {}) {
     },
   );
   form.dataset.entryId = id || "";
-  form.dataset.recurrenceChanged = 'false';
+  form.dataset.recurrenceChanged = 'false';form.dataset.colorChanged='false';
   if(e?.seriesId||e?.recurrenceRule||e?.recurrence!=='none'&&e?.recurrence)body.insertAdjacentHTML('afterbegin',select('수정 범위','recurrenceScope',[['this','이 일정만'],['following','이 일정과 이후 일정'],['all','전체 반복 일정']],e?.seriesId?'this':'all','full'));
   adaptEntryForm(form, state());
-  draftInitial = new URLSearchParams(new FormData(form)).toString();
-  form.onchange = event => {adaptEntryForm(form, state());if(['repeatMode','frequency','interval','weekdays','monthMode','monthPosition','monthWeekday','repeatEnd','repeatUntil','repeatCount'].includes(event.target.name)||event.target.name?.startsWith('repeatDay:'))form.dataset.recurrenceChanged='true';};
+  draftInitial = draftSignature(form);
+  form.onchange = event => {if(event.target.name==='eventColorId')form.dataset.colorChanged='true';if(['kind','status','projectId','date'].includes(event.target.name))adaptEntryForm(form,state());else adaptTimingOnly(form);if(['repeatMode','frequency','interval','weekdays','monthMode','monthPosition','monthWeekday','repeatEnd','repeatUntil','repeatCount'].includes(event.target.name)||event.target.name?.startsWith('repeatDay:'))form.dataset.recurrenceChanged='true';};
 }
 function editProject(id = null) {
   const p = id ? getProject(id) : {};
@@ -905,11 +885,14 @@ function googlePermissionPrompt(feature){
  modalOpen(label+' 연결',`<div class="stack"><p>${label}에 필요한 추가 권한만 요청합니다. 기존 Drive와 이 기기의 기록은 유지합니다.</p><div class="notice-box"><strong>Google 검증 안내</strong><p>Google의 앱 검증이 끝나기 전에는 별도의 경고가 표시될 수 있습니다. Google이 관리하는 화면이며 H.PLAN에서 숨기거나 자동 승인하지 않습니다.</p></div><p class="help">승인을 취소하면 이 기능은 켜지지 않습니다. 기기에서 작성한 기록은 계속 사용할 수 있습니다.</p>${button('Google에서 권한 확인',`google-authorize:${feature}`,'primary')}${button('연결 도움말','google-help')}</div>`);
 }
 async function manageGoogleFeature(feature){
+ const requestedRoute=route,requestedAuth=auth,requestedDialog=modal.open?body.innerHTML:null;const currentRequest=()=>route===requestedRoute&&auth===requestedAuth&&(!modal.open||body.innerHTML===requestedDialog);
+
  const label=feature==='tasks'?'Google 할 일':'Google Calendar',permissions=permissionState(auth),options=calendar.options();
  if(!authConnected()||!permissions[feature])return googlePermissionPrompt(feature);
- if(feature==='tasks')return modalOpen(label+' 설정',`<div class="stack">${checkbox('Google 할 일 동기화 사용','tasksEnabled',options.tasks)}<p class="help">날짜가 있는 할 일의 제목·메모·완료 상태를 연결합니다. Calendar 연결과 별도로 켜거나 끌 수 있습니다.</p>${button('권한 다시 연결','google-permission:tasks')}</div>`,async()=>{const value=new FormData(form).has('tasksEnabled');await calendar.configure({tasks:value});closeModal(true);if(value)await syncGoogleFeature('tasks');});
- let list;try{list=await calendar.calendars();}catch(e){return modalOpen(label+' 연결 확인',`<div class="stack"><p class="notice-box">${esc(e.message)}</p><p class="help">목록을 읽지 못했습니다. 기존 연결 설정과 기록은 유지합니다.</p>${button('다시 시도','calendar-manage','primary')}${button('권한 다시 연결','google-permission:calendar')}${button('연결 도움말','google-help')}</div>`);}
- return modalOpen(label+' 설정',`<div class="stack">${checkbox('Calendar 양방향 동기화 사용','calendarEnabled',options.enabled)}<p class="help">처음 연결한 달 1일부터 가져옵니다. H.PLAN에서 만든 일정은 첫 번째로 선택한 캘린더에 보냅니다.</p>${list.length?list.map(c=>checkbox(c.summary||c.id,'calendar:'+c.id,(options.calendarIds||['primary']).includes(c.id)||c.primary&&(options.calendarIds||[]).includes('primary'))).join(''):'<p class="notice-box">수정 가능한 캘린더가 없습니다.</p>'}<p class="help">Google 원본은 양쪽에서 바로 삭제하며 H.PLAN 원본은 H.PLAN 휴지통으로 보냅니다.</p>${button('권한 다시 연결','google-permission:calendar')}</div>`,async()=>{const f=new FormData(form),enabled=f.has('calendarEnabled'),ids=list.filter(c=>f.has('calendar:'+c.id)).map(c=>c.id);if(enabled&&!ids.length)throw Error('캘린더를 하나 이상 선택해 주세요.');await calendar.configure({enabled,calendarIds:ids});closeModal(true);if(enabled)await syncGoogleFeature('calendar');});
+ if(feature==='tasks')return modalOpen(label+' 설정',`<div class="stack">${checkbox('Google 할 일 동기화 사용','tasksEnabled',options.tasks)}<p class="help">날짜가 있는 할 일의 제목·메모·완료 상태를 연결합니다. Calendar 연결과 별도로 켜거나 끌 수 있습니다.</p>${button('권한 다시 연결','google-permission:tasks')}</div>`,async()=>{const value=new FormData(form).has('tasksEnabled');await calendar.configure({tasks:value});closeModal(true);if(value)syncGoogleFeature('tasks').catch(e=>toast(e.message));});
+ let list;try{list=await calendar.calendars();}catch(e){if(!currentRequest())return;return modalOpen(label+' 연결 확인',`<div class="stack"><p class="notice-box">${esc(e.message)}</p><p class="help">목록을 읽지 못했습니다. 기존 연결 설정과 기록은 유지합니다.</p>${button('다시 시도','calendar-manage','primary')}${button('권한 다시 연결','google-permission:calendar')}${button('연결 도움말','google-help')}</div>`);}
+ if(!currentRequest())return;
+ return modalOpen(label+' 설정',`<div class="stack">${checkbox('Calendar 양방향 동기화 사용','calendarEnabled',options.enabled)}<p class="help">처음 연결한 달 1일부터 가져옵니다. H.PLAN에서 만든 일정은 첫 번째로 선택한 캘린더에 보냅니다.</p>${list.length?list.map(c=>checkbox(c.summary||c.id,'calendar:'+c.id,(options.calendarIds||['primary']).includes(c.id)||c.primary&&(options.calendarIds||[]).includes('primary'))).join(''):'<p class="notice-box">수정 가능한 캘린더가 없습니다.</p>'}<p class="help">Google 원본은 양쪽에서 바로 삭제하며 H.PLAN 원본은 H.PLAN 휴지통으로 보냅니다.</p>${button('권한 다시 연결','google-permission:calendar')}</div>`,async()=>{const f=new FormData(form),enabled=f.has('calendarEnabled'),ids=list.filter(c=>f.has('calendar:'+c.id)).map(c=>c.id);if(enabled&&!ids.length)throw Error('캘린더를 하나 이상 선택해 주세요.');await calendar.configure({enabled,calendarIds:ids});closeModal(true);if(enabled)syncGoogleFeature('calendar').catch(e=>toast(e.message));});
 }
 async function syncGoogleFeature(feature){
  if(!permissionState(auth)[feature]||!(feature==='calendar'?calendar.options().enabled:calendar.options().tasks))return manageGoogleFeature(feature);
@@ -960,7 +943,7 @@ async function handle(a) {
       return entryMenu(arg);
     case "toggle": {
       const e = getEntry(arg);
-      if(e.seriesId||e.recurrenceRule||e.recurrence!=='none'&&e.recurrence){const status=['done','answered'].includes(e.status)?(e.kind==='question'?'open':'planned'):(e.kind==='question'?'answered':'done');await action({type:'entry.save',value:{...e,status},scope:'this',occurrenceDate:e.originalDate||e.date});await notifications?.acknowledge(e.id);return;}
+      if(e.seriesId||e.recurrenceRule||e.recurrence!=='none'&&e.recurrence){const status=['done','answered'].includes(e.status)?(e.kind==='question'?'open':'planned'):(e.kind==='question'?'answered':'done');await action({type:'entry.save',value:{...e,status},scope:'this',occurrenceDate:e.originalDate||e.date});return;}
       return action({
         type: "entry.status",
         ids: [arg],
@@ -1401,6 +1384,10 @@ async function handle(a) {
         "홈 화면에 H.PLAN 추가",
         `<div class="stack"><h3>아이폰 · iPad</h3><p>Safari에서 이 주소를 연 뒤 <strong>공유 → 홈 화면에 추가</strong>를 누르고, 표시된다면 ‘웹 앱으로 열기’를 켜세요.</p><h3>안드로이드</h3><p>Chrome 메뉴에서 <strong>앱 설치</strong> 또는 <strong>홈 화면에 추가</strong>를 선택하세요.</p><p class="help">홈 화면의 H.PLAN 로고로 실행하면 일반 주소창 없이 열립니다. 처음 한 번은 인터넷에 연결해 앱을 불러와야 오프라인에서도 사용할 수 있습니다.</p></div>`,
       );
+    case 'draft-delete': {
+     if(!localStorage.getItem('hplan-draft'))return toast('보관된 임시 작성 내용이 없습니다.');
+     return modalOpen('임시 작성 내용 삭제','<p>보관한 임시 작성본을 삭제할까요? 저장한 일정은 유지됩니다.</p>',()=>{clearDraft();closeModal(true);toast('임시 작성본을 삭제했습니다.');},{label:'삭제'});
+    }
     case "draft-restore": {
       let d;
       try {
@@ -1430,7 +1417,7 @@ async function handle(a) {
           const input = form.elements.namedItem(key);
           if (input) input.checked = value;
         }
-      if (type === "entry") adaptEntryForm(form, state());
+      if(type==='entry'){adaptEntryForm(form,state());form.dataset.recurrenceChanged=String(!!d.recurrenceChanged);form.dataset.colorChanged=String(!!d.colorChanged);}
       return;
     }
     case "help":
@@ -1474,7 +1461,7 @@ document.addEventListener("click", async (event) => {
   if (!target || target.disabled || busy || target.dataset.waiting || pendingActions.has(pendingKey)) return;
   event.preventDefault();
   const actionName = target.dataset.action;
-  const background = ["drive-connect", "drive-sync", "drive-backup", "calendar-sync", "tasks-sync", "google-authorize", "notifications-enable", "notifications-disable"].includes(
+  const background = ["drive-connect", "drive-sync", "drive-backup", "calendar-sync", "tasks-sync", "google-authorize", "notifications-enable", "notifications-disable", "calendar-manage", "tasks-manage"].includes(
     actionName.split(':')[0],
   );
   if (!background) busy = true;
@@ -1493,19 +1480,22 @@ document.addEventListener("click", async (event) => {
 form.onsubmit = async (event) => {
   event.preventDefault();
   if (busy || !saveHandler) return;
+  const errors=validateForm(form);if(errors.length){showFormErrors(form,errors);return;}
   busy = true;
   const submit = footer.querySelector("[type=submit]");
   if (submit) submit.disabled = true;
   try {
+    clearFormErrors(form);
     await saveHandler();
   } catch (e) {
-    toast(e.message);
+    showFormErrors(form,[{message:e.message}]);
   } finally {
     busy = false;
     if (submit) submit.disabled = false;
   }
 };
-form.addEventListener("input", rememberDraft);
+form.addEventListener('input',()=>{clearTimeout(draftTimer);draftTimer=setTimeout(rememberDraft,350);clearFormErrors(form);});
+form.addEventListener('change',()=>{clearTimeout(draftTimer);draftTimer=setTimeout(rememberDraft,350);});
 modal.addEventListener("cancel", (e) => {
   e.preventDefault();
   closeModal();

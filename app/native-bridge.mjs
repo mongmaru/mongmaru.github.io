@@ -1,3 +1,4 @@
+import {entryColor} from './event-colors.mjs';
 import { expandEntries, zonedEpoch } from './core/calendar-recurrence.mjs';
 import { done } from './ui.mjs';
 const ORIGIN='https://mongmaru.github.io';
@@ -6,7 +7,7 @@ const safeStart=e=>{try{return zonedEpoch(e.date,e.startTime||'09:00',e.timeZone
 export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
  const current=new Date(now),start=new Date(Date.UTC(current.getFullYear(),current.getMonth()-1,1,12)).toISOString().slice(0,10),end=new Date(Date.UTC(current.getFullYear()+1,current.getMonth()+1,0,12)).toISOString().slice(0,10);
  const expanded=expandEntries(state.entries.filter(e=>!e.deletedAt),start,end),projects=new Map(state.projects.map(p=>[p.id,p]));
- const events=expanded.slice(0,5000).map(e=>({id:e.id,entryId:e.seriesId||e.id,date:e.date,endDate:e.endDate||null,projectId:e.projectId||null,projectName:(projects.get(e.projectId)?.name||'').slice(0,180),kind:e.kind||'personal',title:(e.text||'제목 없는 일정').slice(0,600),displayColor:/^#[a-f0-9]{6}$/i.test(e.google?.calendarColor||'')?e.google.calendarColor:(projects.get(e.projectId)?.color||null),eventColorId:e.eventColorId||null,startTime:e.startTime||null,origin:e.origin||'hplan',completed:done(e),startAt:safeStart(e),notifications:{enabled:false,beforeMinutes:5,repeatMinutes:5,count:1,...e.notifications}}));
+ const events=expanded.slice(0,5000).map(e=>({id:e.id,entryId:e.seriesId||e.id,date:e.date,endDate:e.endDate||null,projectId:e.projectId||null,projectName:(projects.get(e.projectId)?.name||'').slice(0,180),kind:e.kind||'personal',title:(e.text||'제목 없는 일정').slice(0,600),displayColor:entryColor(e,projects.get(e.projectId)),eventColorId:e.eventColorId||null,startTime:e.startTime||null,origin:e.origin||'hplan',completed:done(e),startAt:safeStart(e),notifications:{enabled:false,beforeMinutes:5,repeatMinutes:5,count:1,...e.notifications}}));
  return {generatedAt:now,theme:state.settings.theme||'light',cacheKey,rangeStart:start,rangeEnd:end,truncated:expanded.length>5000,events};
 }
 export class NativeBridge {
@@ -24,7 +25,7 @@ export class NativeBridge {
   const port=this.port;
   const acceptReady=m=>{
    if(m?.type!=='hplan.native.ready'||m.version!==1||typeof m.nonce!=='string'||m.nonce.length<16||m.nonce.length>200||this.nonce&&m.nonce!==this.nonce)return false;
-   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
+   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.notificationStatus=m.notificationStatus||null;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
   };
   this.handshakeTimer=setTimeout(()=>{if(port===this.port&&!this.nonce){port.close();this.port=null;this.status='Android 연결 응답 대기 시간 초과';this.onState?.();}},8000);
   port.onmessage=async e=>{
@@ -35,7 +36,7 @@ export class NativeBridge {
    if(m.type==='hplan.native.snapshot.rejected'){clearTimeout(this.ackTimer);this.status='위젯 저장본 형식 확인 필요';this.onState?.();return;}
    if(m.type==='hplan.native.snapshot.accepted'){
     if(this.pendingSnapshot&&m.generatedAt!==this.pendingSnapshot.generatedAt)return;
-    clearTimeout(this.ackTimer);this.lastAccepted=m.generatedAt;this.pendingSnapshot=null;this.status='위젯 반영 완료';this.onState?.();return;
+    clearTimeout(this.ackTimer);this.notificationStatus=m.notificationStatus||this.notificationStatus;this.lastAccepted=m.generatedAt;this.pendingSnapshot=null;this.status='위젯 반영 완료';this.onState?.();return;
    }
    if(m.type==='hplan.native.ready'){acceptReady(m);return;}
    if(m.type==='hplan.native.ack'&&typeof m.occurrenceId==='string'){
