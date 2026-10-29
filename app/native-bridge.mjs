@@ -1,6 +1,7 @@
 import {entryColor} from './event-colors.mjs';
 import { expandEntries, zonedEpoch } from './core/calendar-recurrence.mjs';
 import { done } from './ui.mjs';
+import {rememberedNativeIntent,rememberNativeIntent} from './notification-policy.mjs';
 const ORIGIN='https://mongmaru.github.io';
 const MAX_TRANSFER=1800000;
 const safeStart=e=>{try{return zonedEpoch(e.date,e.startTime||'09:00',e.timeZone||'Asia/Seoul');}catch{return null;}};
@@ -12,7 +13,7 @@ export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
 }
 export class NativeBridge {
  constructor({getState,getCacheKey,onAck,onReady,onState}={}) {
-  Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=new URLSearchParams(location.search||'').get('native')==='1';if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
+  Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=rememberedNativeIntent();if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
   this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);window.hplanNativeBridgeActive=true;
   const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);
  }
@@ -20,12 +21,13 @@ export class NativeBridge {
   if(location.origin!==ORIGIN||![ORIGIN,'android-app://mongmaru.github.io/com.hplan.app','android-app://mongmaru.github.io'].includes(event.origin))return;
   let data=event.data;const bootstrap=data==='';try{if(typeof data==='string'&&!bootstrap)data=JSON.parse(data);}catch{return;}
   if(!bootstrap&&(data?.type!=='hplan.native.ready'||data.version!==1||typeof data.nonce!=='string'||data.nonce.length<16||data.nonce.length>200)||!event.ports?.[0])return;
+  this.expected=true;rememberNativeIntent();
   clearTimeout(this.ackTimer);this.port?.close();this.port=event.ports[0];this.nonce=bootstrap?null:data.nonce;this.lastInput=null;this.pendingSnapshot=null;
   this.status='위젯에 일정 전달 중';this.nativeNotificationsEnabled=data.nativeNotificationsEnabled===true&&data.notificationPermission==='granted';
   const port=this.port;
   const acceptReady=m=>{
    if(m?.type!=='hplan.native.ready'||m.version!==1||typeof m.nonce!=='string'||m.nonce.length<16||m.nonce.length>200||this.nonce&&m.nonce!==this.nonce)return false;
-   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.notificationStatus=m.notificationStatus||null;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
+   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.notificationPermission=m.notificationPermission;this.notificationStatus=m.notificationStatus||null;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
   };
   this.handshakeTimer=setTimeout(()=>{if(port===this.port&&!this.nonce){port.close();this.port=null;this.status='Android 연결 응답 대기 시간 초과';this.onState?.();}},8000);
   port.onmessage=async e=>{
@@ -49,6 +51,7 @@ export class NativeBridge {
   port.onmessageerror=()=>{if(port===this.port){this.status='위젯 연결 확인 필요 · 앱을 다시 열어 주세요';this.onState?.();}};
   port.start?.();if(!bootstrap)acceptReady(data);
  }
+ openSettings(){if(!this.port||!this.nonce)return false;this.send({type:'hplan.native.settings'});return true;}
  send(message) {
   // Binary search caps large payloads in O(log N) serializations. Repeatedly
   // popping/stringifying thousands of long titles caused avoidable renderer work.

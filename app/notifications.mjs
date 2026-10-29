@@ -1,5 +1,6 @@
 import {notificationSchedule,dueNotifications,acknowledgeNotification} from './core/notifications.mjs';
 import {zonedEpoch} from './core/calendar-recurrence.mjs';
+import {usesNativeNotifications} from './notification-policy.mjs';
 const KEY='hplan-notification-ledger-v1';
 export class AppNotifications {
  constructor({getState,getAuth,getNative,onError=()=>{}}){Object.assign(this,{getState,getAuth,getNative,onError});try{this.ledger=JSON.parse(localStorage.getItem(KEY)||'{}');}catch{this.ledger={};}this.enabled=localStorage.getItem('hplan-device-notifications')==='true';this.timer=setInterval(()=>this.tick().catch(()=>{}),30000);}
@@ -18,22 +19,33 @@ export class AppNotifications {
   let changed=false;for(const record of result.acks.slice(0,2000))if(typeof record.entryId==='string'&&!(this.ledger.acknowledged?.[record.entryId]&&this.ledger.ackVersions?.[record.entryId]===Date.parse(record.startAt)))changed=this.rememberAcknowledgment(record.entryId,record.startAt,false)||changed;if(changed)this.persist();
  }
  async enable(){
+  if(usesNativeNotifications(this.getNative?.()))throw Error('Android 앱 알림·위젯 설정에서 기기 알림과 Android 알림 허용을 확인해 주세요. 앱 연결을 기다리는 동안 Chrome 알림으로 전환하지 않습니다.');
   if(!this.getAuth().connected)throw Error('웹 푸시 알림은 Google 계정을 연결한 뒤 켜 주세요. Android 앱에서는 기기 알림 설정을 사용할 수 있습니다.');
   if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window))throw Error('이 브라우저는 웹 알림을 지원하지 않습니다. iPhone은 홈 화면에 설치한 뒤 사용해 주세요.');
-  const generation=this.generation=(this.generation||0)+1,auth=this.getAuth(),current=()=>generation===this.generation&&auth===this.getAuth()&&auth.connected;
+  const generation=this.generation=(this.generation||0)+1,auth=this.getAuth(),current=()=>generation===this.generation&&auth===this.getAuth()&&auth.connected&&!usesNativeNotifications(this.getNative?.());
   const permission=await Notification.requestPermission();if(permission!=='granted')throw Error('브라우저·기기 설정에서 H.PLAN 알림을 허용해 주세요.');
   if(!current())throw Error('알림 설정이 변경되어 이전 요청을 취소했습니다.');
   const previous=this.enabled;this.enabled=true;try{await this.upload(true);if(!current())throw Error('알림 설정이 변경되어 이전 요청을 취소했습니다.');localStorage.setItem('hplan-device-notifications','true');}catch(e){if(current()){this.enabled=previous;if(!previous)localStorage.removeItem('hplan-device-notifications');}throw e;}
  }
+ async suppressWebPush(auth=this.getAuth()){
+  if(!auth?.connected||!auth.request||!auth.credential?.secret){this.webPushCleanup='pending';return false;}
+  const credential={...auth.credential},account=auth.account?.sub,signature=JSON.stringify([account,credential.server,credential.secret]);
+  if(this.suppressed!==signature){
+   this.webPushCleanup='pending';
+   try{await auth.request('/v1/push',credential,{method:'DELETE'});}catch(error){this.webPushCleanup='failed';throw error;}
+   if(auth===this.getAuth()&&auth.connected&&auth.account?.sub===account&&auth.credential?.secret===credential.secret&&usesNativeNotifications(this.getNative?.())){this.suppressed=signature;this.webPushCleanup='complete';}
+  }
+  this.uploaded=null;return false;
+ }
  async disable(){this.generation=(this.generation||0)+1;this.enabled=false;this.uploaded=null;this.suppressed=null;localStorage.removeItem('hplan-device-notifications');const auth=this.getAuth();return this.serialize(async()=>{if(auth.connected)await auth.request('/v1/push',auth.credential,{method:'DELETE'}).catch(()=>{});const registration=await navigator.serviceWorker?.ready;await (await registration?.pushManager?.getSubscription())?.unsubscribe();});}
  upload(force=false){
-  const generation=this.generation||0,auth=this.getAuth(),credential=auth?.credential,account=auth?.account?.sub;
+  const generation=this.generation||0,auth=this.getAuth(),credential={...auth?.credential},account=auth?.account?.sub;
   return this.serialize(async()=>{
   this.refreshAcknowledgments();
   const session=()=>this.enabled&&(this.generation||0)===generation&&auth===this.getAuth()&&auth.connected&&auth.account?.sub===account&&auth.credential?.secret===credential?.secret&&typeof Notification!=='undefined'&&Notification.permission==='granted';
-  const current=()=>session()&&!this.getNative()?.nativeNotificationsEnabled;
+  const current=()=>session()&&!usesNativeNotifications(this.getNative?.());
+  if(usesNativeNotifications(this.getNative?.()))return this.suppressWebPush(auth);
   if(!session()||!auth.request)return false;
-  if(this.getNative()?.nativeNotificationsEnabled){const signature=JSON.stringify([account,credential?.server,credential?.secret]);if(this.suppressed!==signature){await auth.request('/v1/push',credential,{method:'DELETE'});if(session()&&this.getNative()?.nativeNotificationsEnabled)this.suppressed=signature;}this.uploaded=null;return false;}
   this.suppressed=null;
   const registration=await navigator.serviceWorker.ready;
   if(!current())return false;
@@ -48,13 +60,14 @@ export class AppNotifications {
   const now=Date.now(),jobs=notificationSchedule(this.getState().entries,{from:new Date(now-60000),to:new Date(now+365*86400000),ledger:this.ledger});
   const signature=JSON.stringify([auth.account?.sub||'',auth.credential?.secret||'',subscription.endpoint,jobs]);if(!force&&signature===this.uploaded)return;
   await auth.request('/v1/push',credential,{method:'POST',body:{subscription:subscription.toJSON(),jobs}});
-  if(!current()){this.uploaded=null;await auth.request('/v1/push',credential,{method:'DELETE'}).catch(()=>{});if(created)await subscription.unsubscribe();return false;}
+  if(!current()){this.uploaded=null;if(usesNativeNotifications(this.getNative?.())&&auth===this.getAuth()&&credential.secret===auth.credential?.secret)await this.suppressWebPush(auth);else await auth.request('/v1/push',credential,{method:'DELETE'}).catch(()=>{});if(created)await subscription.unsubscribe();return false;}
   this.uploaded=signature;return true;
   });
  }
  tick(){return this.serialize(async()=>{
   this.refreshAcknowledgments();
-  const generation=this.generation||0,current=()=>this.enabled&&(this.generation||0)===generation&&!this.getNative()?.nativeNotificationsEnabled&&'Notification'in window&&Notification.permission==='granted';
+  if(usesNativeNotifications(this.getNative?.()))return this.suppressWebPush();
+  const generation=this.generation||0,current=()=>this.enabled&&(this.generation||0)===generation&&!usesNativeNotifications(this.getNative?.())&&'Notification'in window&&Notification.permission==='granted';
   if(!current())return;
   const registration=await navigator.serviceWorker.ready;
   if(!current())return;

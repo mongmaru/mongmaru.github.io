@@ -741,6 +741,8 @@ async function attachDrive(nextAuth, account, attempt) {
   if (!nextAuth.requiresReauth) await nextAuth.commit?.();
   if (attempt !== connectionGeneration) return;
   auth = nextAuth;
+  nativeBridge?.update();
+  refreshNotifications();
   if(!permissionState(nextAuth).drive){sync=null;render();return;}
   const controller = new SyncController({
     repo,
@@ -795,6 +797,7 @@ async function restoreDrive() {
 let lastDriveAttempt=0;
 const automaticSync=new AutomaticSync(performAutoSync);
 function autoSync(reason='foreground'){return automaticSync.request(reason);}
+function refreshNotifications(force=false){if(!notifications)return;notifications.upload(force).finally(()=>{if(route==='settings'&&!modal.open)settings();}).catch(()=>{});}
 async function performAutoSync(reason='foreground') {
   let checkedAuth,checkedGeneration;
   try {
@@ -811,12 +814,12 @@ async function performAutoSync(reason='foreground') {
       authRefreshError=false;
       // Reserve imminent reminders independently of slow Drive/Calendar RPCs.
       // The notification queue guards account changes and native handover itself.
-      notifications?.upload().catch(()=>{});
+      refreshNotifications();
       if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
       if(sync&&!sync.stopped&&(reason!=='idle'||Date.now()-lastDriveAttempt>=60000)){lastDriveAttempt=Date.now();try{await runSync(false, true);}catch{}}
       if(!modal.open)try{await calendar?.run({reason});}catch{}
       // Remote completions/edits may cancel or change a reminder during that run.
-      notifications?.upload().catch(()=>{});
+      refreshNotifications();
       renderSyncStatus();
     }
   } catch {
@@ -905,7 +908,9 @@ async function handle(a) {
     op = pos < 0 ? a : a.slice(0, pos),
     arg = pos < 0 ? "" : a.slice(pos + 1);
   switch (op) {
-    case 'native-settings':nativeBridge.send({type:'hplan.native.settings'});return;
+    case 'native-settings':
+      if(!nativeBridge?.openSettings())toast('Android 연결을 기다리고 있습니다. 홈 화면 H.PLAN 위젯의 ⋮에서 알림 설정을 열어 주세요.');
+      return;
     case 'calendar-manage':return manageGoogleFeature('calendar');
     case 'tasks-manage':return manageGoogleFeature('tasks');
     case 'google-permission':return googlePermissionPrompt(arg==='tasks'?'tasks':'calendar');
@@ -1611,7 +1616,7 @@ try {
   repo = await Repository.open(await IndexedStore.open());
   calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{renderSyncStatus();if(route==='settings'&&!modal.open)settings();}});
   notifications=new AppNotifications({getState:state,getAuth:()=>auth,getNative:()=>nativeBridge,onError:e=>toast(e.message)});
-  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:(id,entryId,startAt)=>notifications.acknowledge(id,startAt),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
+  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:(id,entryId,startAt)=>notifications.acknowledge(id,startAt),onReady:()=>{notifications.uploaded=null;refreshNotifications(true);if(route==='settings')settings();}});
   const launch=new URLSearchParams(location.search);
   if(dateOK(launch.get('date')))date=launch.get('date');
   navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt,e.data.sessionId).catch(()=>{});});
