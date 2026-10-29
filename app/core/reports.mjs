@@ -1,7 +1,7 @@
 let embeddedFonts='';
 export async function prepareFonts(){if(embeddedFonts)return;const list=await Promise.all([['NanumSquareR.ttf',400],['NanumSquareB.ttf',700]].map(async([name,weight])=>{const res=await fetch(new URL('../fonts/'+name,import.meta.url));if(!res.ok)throw Error('인쇄 글꼴을 불러오지 못했습니다.');const bytes=new Uint8Array(await res.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));return '@font-face{font-family:NanumSquare;font-weight:'+weight+';src:url(data:font/ttf;base64,'+btoa(binary)+')}';}));embeddedFonts=list.join('');}
 const fontCSS=()=>embeddedFonts;
-import { dateOK, expandRecurrences } from "./domain.mjs";
+import { dateOK, expandEntries } from "./domain.mjs";
 const labels = {
   planned: "예정",
   progress: "진행 중",
@@ -36,21 +36,26 @@ function range(o) {
 }
 function selectReport(s, o) {
   const [start, end] = range(o);
-  return expandRecurrences(s.entries, end)
+  return expandEntries(s.entries, start, end)
     .filter(
       (e) =>
         !e.deletedAt &&
-        e.date >= start &&
-        e.date <= end &&
         (o.includePersonal !== false || e.kind !== "personal") &&
         (!o.projectId || e.projectId === o.projectId) &&
         (o.includeDone !== false ||
           !["done", "answered", "canceled", "moved"].includes(e.status)) &&
         (!o.kinds || o.kinds.includes(e.kind)),
     )
-    .sort(
-      (a, b) => a.date.localeCompare(b.date) || (a.order ?? 0) - (b.order ?? 0),
-    );
+    .map(e=>({...e,reportStartDate:e.date<start?start:e.date,reportEndDate:(e.endDate||e.date)>end?end:(e.endDate||e.date)}))
+    .sort((a,b)=>a.reportStartDate.localeCompare(b.reportStartDate)||(a.order??0)-(b.order??0));
+}
+function reportDate(e,short=false) {
+  const start=e.reportStartDate||e.date,end=e.reportEndDate||e.endDate||e.date;
+  const format=date=>short?date.slice(5).replace('-','.'):date;
+  return format(start)+(end!==start?' ~ '+format(end):'');
+}
+function scheduleDetail(e) {
+  return [e.endDate?'기간: '+e.date+' ~ '+e.endDate:'',e.allDay===false?'시간: '+e.startTime+' ~ '+e.endTime+' ('+(e.timeZone||'Asia/Seoul')+')':''];
 }
 function title(o) {
   return (
@@ -65,6 +70,7 @@ function title(o) {
 function detail(e) {
   return [
     e.text,
+    ...scheduleDetail(e),
     e.parentId ? "↳ 하위 업무" : "",
     e.notes ? "메모: " + e.notes : "",
     e.dueDate ? "마감: " + e.dueDate : "",
@@ -76,6 +82,7 @@ function detail(e) {
 function question(e) {
   return [
     e.text,
+    ...scheduleDetail(e),
     e.target ? "확인 대상: " + e.target : "",
     e.answer ? "답변: " + e.answer : "",
     e.reviewDate ? "재확인: " + e.reviewDate : "",
@@ -94,7 +101,7 @@ function reportHTML(s, o) {
         content.length > 700 || content.split("\n").length > 12
           ? "auto"
           : "avoid";
-      return `<tr style="break-inside:${flow}"><td class="date">${esc(e.date.slice(5).replace("-", "."))}<br><small>${["일", "월", "화", "수", "목", "금", "토"][new Date(e.date + "T12:00:00Z").getUTCDay()]}</small></td><td>${e.kind === "personal" ? esc(detail(e)) : ""}</td><td>${esc(p?.name || (e.kind === "task" ? "공통 업무" : ""))}</td><td ${o.monochrome ? "" : `style="color:${/^#[\da-f]{6}$/i.test(e.color || "") ? e.color : "#222"}"`}>${e.kind === "task" ? esc(detail(e)) : ""}</td><td>${e.kind === "question" ? esc(question(e)) : ""}</td><td class="status">${esc(labels[e.status])}</td></tr>`;
+      return `<tr style="break-inside:${flow}"><td class="date">${esc(reportDate(e,true))}<br><small>${e.reportStartDate!==e.reportEndDate?"기간":["일", "월", "화", "수", "목", "금", "토"][new Date((e.reportStartDate||e.date) + "T12:00:00Z").getUTCDay()]}</small></td><td>${e.kind === "personal" ? esc(detail(e)) : ""}</td><td>${esc(p?.name || (e.kind === "task" ? "공통 업무" : ""))}</td><td ${o.monochrome ? "" : `style="color:${/^#[\da-f]{6}$/i.test(e.color || "") ? e.color : "#222"}"`}>${e.kind === "task" ? esc(detail(e)) : ""}</td><td>${e.kind === "question" ? esc(question(e)) : ""}</td><td class="status">${esc(labels[e.status])}</td></tr>`;
     })
     .join("");
   return `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><title>${esc(title(o))}</title><style>${fontCSS()}@page{size:${o.paper === "A3" ? "A3" : "A4"} landscape;margin:14mm 12mm 17mm}*{box-sizing:border-box}body{font-family:'NanumSquare',sans-serif;color:#202024;font-size:10px;margin:0}header{display:flex;justify-content:space-between;align-items:end;padding:4px 0 14px;border-bottom:3px solid ${o.monochrome ? "#222" : "#C9232C"}}h1{font-size:22px;letter-spacing:-1px;margin:0}header p{font-size:10px;color:#666}.brand{font-weight:700;letter-spacing:2px}table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:14px}thead{display:table-header-group}th{background:#f1f1f3;padding:10px 7px;text-align:left;font-size:10px;border-bottom:1px solid #aaa}td{border-bottom:1px solid #ddd;padding:9px 7px;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}tr{break-inside:avoid}td.date{font-weight:bold}.date small{color:#888;font-weight:normal}.status{color:#666;font-size:9px}footer{margin-top:15px;color:#888;font-size:9px}.empty{text-align:center;padding:50px;color:#888}</style></head><body><header><div><p class="brand">H.PLAN / WORK DIARY</p><h1>${esc(title(o))}</h1></div><p>${es.length}개 항목 · ${o.includePersonal === false ? "개인 할 일 제외" : "개인 할 일 포함"}</p></header><table><colgroup><col style="width:7%"><col style="width:16%"><col style="width:15%"><col style="width:30%"><col style="width:25%"><col style="width:7%"></colgroup><thead><tr><th>날짜</th><th>개인 할 일</th><th>프로젝트</th><th>업무 일정</th><th>확인·질문 / 답변</th><th>상태</th></tr></thead><tbody>${body || '<tr><td colspan="6" class="empty">선택한 조건에 해당하는 기록이 없습니다.</td></tr>'}</tbody></table><footer>H.PLAN · ${esc(o.date)} 기준 · 업무 기록은 작성 날짜 순서로 정리됩니다.</footer></body></html>`;
@@ -184,7 +191,7 @@ async function writeWorkbook(s, o) {
     const pm = new Map(s.projects.map((p) => [p.id, p]));
     for (const e of entries) {
       const values = [
-        e.date,
+        reportDate(e),
         e.kind === "personal" ? detail(e) : "",
         pm.get(e.projectId)?.name || "",
         e.kind === "task" ? detail(e) : "",
