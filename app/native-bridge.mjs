@@ -11,27 +11,33 @@ export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
 }
 export class NativeBridge {
  constructor({getState,getCacheKey,onAck,onReady,onState}={}) {
-  Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;
+  Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=new URLSearchParams(location.search||'').get('native')==='1';if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
   this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);window.hplanNativeBridgeActive=true;
   const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);
  }
  receive(event) {
   if(event.origin!==ORIGIN||location.origin!==ORIGIN)return;
-  let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch{return;}
-  if(data?.type!=='hplan.native.ready'||data.version!==1||typeof data.nonce!=='string'||data.nonce.length<16||data.nonce.length>200||!event.ports?.[0])return;
-  clearTimeout(this.ackTimer);this.port?.close();this.port=event.ports[0];this.nonce=data.nonce;this.lastInput=null;this.pendingSnapshot=null;
+  let data=event.data;const bootstrap=data==='';try{if(typeof data==='string'&&!bootstrap)data=JSON.parse(data);}catch{return;}
+  if(!bootstrap&&(data?.type!=='hplan.native.ready'||data.version!==1||typeof data.nonce!=='string'||data.nonce.length<16||data.nonce.length>200)||!event.ports?.[0])return;
+  clearTimeout(this.ackTimer);this.port?.close();this.port=event.ports[0];this.nonce=bootstrap?null:data.nonce;this.lastInput=null;this.pendingSnapshot=null;
   this.status='위젯에 일정 전달 중';this.nativeNotificationsEnabled=data.nativeNotificationsEnabled===true&&data.notificationPermission==='granted';
-  const port=this.port,nonce=this.nonce;
+  const port=this.port;
+  const acceptReady=m=>{
+   if(m?.type!=='hplan.native.ready'||m.version!==1||typeof m.nonce!=='string'||m.nonce.length<16||m.nonce.length>200||this.nonce&&m.nonce!==this.nonce)return false;
+   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
+  };
+  this.handshakeTimer=setTimeout(()=>{if(port===this.port&&!this.nonce){port.close();this.port=null;this.status='Android 연결 응답 대기 시간 초과';this.onState?.();}},8000);
   port.onmessage=async e=>{
    if(port!==this.port)return;
    let m=e.data;try{if(typeof m==='string')m=JSON.parse(m);}catch{return;}
-   if(m?.nonce!==nonce||m.version!==1)return;
+   if(!this.nonce){acceptReady(m);return;}
+   if(m?.nonce!==this.nonce||m.version!==1)return;
    if(m.type==='hplan.native.snapshot.rejected'){clearTimeout(this.ackTimer);this.status='위젯 저장본 형식 확인 필요';this.onState?.();return;}
    if(m.type==='hplan.native.snapshot.accepted'){
     if(this.pendingSnapshot&&m.generatedAt!==this.pendingSnapshot.generatedAt)return;
     clearTimeout(this.ackTimer);this.lastAccepted=m.generatedAt;this.pendingSnapshot=null;this.status='위젯 반영 완료';this.onState?.();return;
    }
-   if(m.type==='hplan.native.ready'){this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';this.onReady?.(this);this.update();return;}
+   if(m.type==='hplan.native.ready'){acceptReady(m);return;}
    if(m.type==='hplan.native.ack'&&typeof m.occurrenceId==='string'){
     // Legacy APK acknowledgements have no original time. Keep their native
     // acknowledgement local instead of accidentally acknowledging a new time.
@@ -40,7 +46,7 @@ export class NativeBridge {
    }
   };
   port.onmessageerror=()=>{if(port===this.port){this.status='위젯 연결 확인 필요 · 앱을 다시 열어 주세요';this.onState?.();}};
-  port.start?.();this.onReady?.(this);this.update();
+  port.start?.();if(!bootstrap)acceptReady(data);
  }
  send(message) {
   // Binary search caps large payloads in O(log N) serializations. Repeatedly
@@ -58,7 +64,7 @@ export class NativeBridge {
   for(let index=0;index<total;index++)this.port?.postMessage(JSON.stringify({type:'hplan.native.snapshot.chunk',nonce:this.nonce,version:1,transferId,index,total,data:serialized.slice(index*60000,(index+1)*60000)}));
  }
  deliver(snapshot,attempt=0) {
-  if(!this.port)return;
+  if(!this.port||!this.nonce)return;
   clearTimeout(this.ackTimer);this.pendingSnapshot=snapshot;this.send({type:'hplan.native.snapshot',snapshot});
   this.ackTimer=setTimeout(()=>{
    if(this.pendingSnapshot!==snapshot||!this.port)return;
@@ -67,7 +73,7 @@ export class NativeBridge {
   },5000);
  }
  update() {
-  if(!this.port)return;clearTimeout(this.timer);
+  if(!this.port||!this.nonce)return;clearTimeout(this.timer);
   this.timer=setTimeout(()=>{
    try {
     const state=this.getState(),cacheKey=this.getCacheKey?.()||'local',now=new Date();
@@ -79,5 +85,5 @@ export class NativeBridge {
    }catch{this.status='위젯 전달을 확인하지 못했습니다 · 기존 저장본 유지';this.onState?.();}
   },250);
  }
- stop(){clearTimeout(this.timer);clearTimeout(this.ackTimer);window.removeEventListener('message',this.listener);window.hplanNativeBridgeActive=false;this.port?.close();this.port=null;this.pendingSnapshot=null;}
+ stop(){clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);clearTimeout(this.timer);clearTimeout(this.ackTimer);window.removeEventListener('message',this.listener);window.hplanNativeBridgeActive=false;this.port?.close();this.port=null;this.pendingSnapshot=null;}
 }
