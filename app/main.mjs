@@ -1574,7 +1574,7 @@ try {
   repo = await Repository.open(await IndexedStore.open());
   calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{if(route==='settings'&&!modal.open)settings();}});
   notifications=new AppNotifications({getState:state,getAuth:()=>auth,getNative:()=>nativeBridge,onError:e=>toast(e.message)});
-  nativeBridge=new NativeBridge({getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:id=>notifications.acknowledge(id),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
+  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:id=>notifications.acknowledge(id),onReady:()=>{notifications.uploaded=null;notifications.upload(true).catch(()=>{});if(route==='settings')settings();}});
   const launch=new URLSearchParams(location.search);
   if(dateOK(launch.get('date')))date=launch.get('date');
   navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt).catch(()=>{});});
@@ -1601,7 +1601,7 @@ try {
         toast("다른 창의 기록이 변경됐습니다. 작성 내용은 유지됩니다.");
     };
   }
-  route = ["projects", "overview"].includes(state().settings.startPage)
+  route = dateOK(launch.get('date'))?'planner':["projects", "overview"].includes(state().settings.startPage)
     ? state().settings.startPage
     : "planner";
   await action({ type: "materialize", through: monthEnd(date) });

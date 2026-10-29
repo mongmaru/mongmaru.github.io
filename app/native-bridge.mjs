@@ -4,18 +4,18 @@ const ORIGIN='https://mongmaru.github.io';
 export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
  const current=new Date(now),start=new Date(Date.UTC(current.getFullYear(),current.getMonth()-1,1,12)).toISOString().slice(0,10),end=new Date(Date.UTC(current.getFullYear()+1,current.getMonth()+1,0,12)).toISOString().slice(0,10);
  const expanded=expandEntries(state.entries.filter(e=>!e.deletedAt),start,end);
- const events=expanded.slice(0,5000).map(e=>({id:e.id,entryId:e.seriesId||e.id,date:e.date,endDate:e.endDate||null,projectId:e.projectId||null,projectName:state.projects.find(p=>p.id===e.projectId)?.name||'',kind:e.kind||'personal',title:(e.text||'제목 없는 일정').slice(0,600),startTime:e.startTime||null,origin:e.origin||'hplan',completed:done(e),startAt:zonedEpoch(e.date,e.startTime||'09:00',e.timeZone||'Asia/Seoul'),notifications:{enabled:false,beforeMinutes:5,repeatMinutes:5,count:1,...e.notifications}}));
+ const events=expanded.slice(0,5000).map(e=>({id:e.id,entryId:e.seriesId||e.id,date:e.date,endDate:e.endDate||null,projectId:e.projectId||null,projectName:state.projects.find(p=>p.id===e.projectId)?.name||'',kind:e.kind||'personal',title:(e.text||'제목 없는 일정').slice(0,600),displayColor:/^#[a-f0-9]{6}$/i.test(e.google?.calendarColor||'')?e.google.calendarColor:(state.projects.find(p=>p.id===e.projectId)?.color||null),eventColorId:e.eventColorId||null,startTime:e.startTime||null,origin:e.origin||'hplan',completed:done(e),startAt:zonedEpoch(e.date,e.startTime||'09:00',e.timeZone||'Asia/Seoul'),notifications:{enabled:false,beforeMinutes:5,repeatMinutes:5,count:1,...e.notifications}}));
  return {generatedAt:now,theme:state.settings.theme||'light',cacheKey,rangeStart:start,rangeEnd:end,truncated:expanded.length>5000,events};
 }
 export class NativeBridge {
- constructor({getState,getCacheKey,onAck,onReady}={}){Object.assign(this,{getState,getCacheKey,onAck,onReady});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);}
+ constructor({getState,getCacheKey,onAck,onReady,onState}={}){Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);window.hplanNativeBridgeActive=true;const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);}
  receive(event){
   if(event.origin!==ORIGIN||location.origin!==ORIGIN)return;
   let data=event.data;try{if(typeof data==='string')data=JSON.parse(data);}catch{return;}
   if(data?.type!=='hplan.native.ready'||data.version!==1||typeof data.nonce!=='string'||data.nonce.length<16||data.nonce.length>200||!event.ports?.[0])return;
   this.port?.close();this.port=event.ports[0];this.nonce=data.nonce;
   this.nativeNotificationsEnabled=data.nativeNotificationsEnabled===true&&data.notificationPermission==='granted';
-  this.port.onmessage=async e=>{let m=e.data;try{if(typeof m==='string')m=JSON.parse(m);}catch{return;}if(m?.nonce!==this.nonce||m.version!==1)return;if(m.type==='hplan.native.ready'){this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';this.onReady?.(this);return;}if(m.type==='hplan.native.ack'&&typeof m.occurrenceId==='string'){await this.onAck?.(m.occurrenceId,m.entryId);this.send({type:'hplan.native.ack.received',occurrenceId:m.occurrenceId});}};
+  this.port.onmessage=async e=>{let m=e.data;try{if(typeof m==='string')m=JSON.parse(m);}catch{return;}if(m?.nonce!==this.nonce||m.version!==1)return;if(m.type==='hplan.native.snapshot.rejected'){this.status='위젯 저장본 형식 확인이 필요합니다.';this.onState?.();return;}if(m.type==='hplan.native.snapshot.accepted'){this.lastAccepted=m.generatedAt;this.status='일정 전달 완료';this.onState?.();return;}if(m.type==='hplan.native.ready'){this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';this.onReady?.(this);return;}if(m.type==='hplan.native.ack'&&typeof m.occurrenceId==='string'){await this.onAck?.(m.occurrenceId,m.entryId);this.send({type:'hplan.native.ack.received',occurrenceId:m.occurrenceId});}};
   this.port.start?.();this.onReady?.(this);this.update();
  }
  send(message){

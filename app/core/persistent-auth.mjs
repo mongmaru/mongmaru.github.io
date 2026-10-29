@@ -48,7 +48,7 @@ export class PersistentAuth {
     await this.vault.read();
     this.flushRevocations().catch(() => {});
   }
-  async request(path, credential, { method = "GET", body: requestBody } = {}) {
+  async request(path, credential, { method = "GET", body: requestBody } = {}, retried=false) {
     let res;
     try {
       res = await this.fetch(credential.server + path, {
@@ -63,10 +63,12 @@ export class PersistentAuth {
         redirect: "error",
         signal: AbortSignal.timeout(25000),
       });
-    } catch {
+    } catch (failure) {
+      if(!retried&&!/Timeout|Abort/.test(failure.name||'')&&(method==='GET'||path==='/v1/google'&&(requestBody?.method||'GET')==='GET')){await this.sleep(250);return this.request(path,credential,{method,body:requestBody},true);}
+      const stage=path.startsWith('/v1/session')?'계정 확인':path==='/v1/google'?'Google 대체 통신':'알림 연결',reason=/Timeout|Abort/.test(failure.name||'')?'시간 초과':'네트워크';
       throw Object.assign(
         Error(
-          "자동 연결을 잠시 확인하지 못했습니다. 기록은 기기에 저장하며 연결되면 다시 동기화합니다.",
+          `자동 연결을 잠시 확인하지 못했습니다. 기록은 기기에 보관됩니다. [${stage} · ${reason}]`,
         ),
         { code: "TEMPORARY" },
       );

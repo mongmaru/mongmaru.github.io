@@ -1,11 +1,11 @@
 import {CalendarClient} from './core/calendar-client.mjs';
 import {CalendarSync} from './core/calendar-sync.mjs';
 import {permissionState,featureState} from './google-permissions.mjs';
-export function describeErrors(errors=[]){const messages=[...new Set(errors.map(e=>/failed to fetch|networkerror|load failed/i.test(e.message||'')?'Google에 연결하지 못했습니다. 연결을 유지하며 잠시 후 다시 시도합니다.':e.message||'Google 연결을 확인해 주세요.'))];return messages.slice(0,3).join(' · ')+(errors.length>1?' ('+errors.length+'건)':'');}
+export function describeErrors(errors=[]){const messages=[...new Set(errors.map(e=>/failed to fetch|networkerror|load failed/i.test(e.message||'')?'Google에 연결하지 못했습니다. 연결을 유지하며 잠시 후 다시 시도합니다.':e.message||'Google 연결을 확인해 주세요.'))];return messages.slice(0,3).join(' · ')+(messages.length>3?' · 기타 오류':'' );}
 export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.fetch.bind(globalThis)){
- return async(url,options={})=>{try{return await transport(url,options);}catch(e){
+ let blocked=null;return async(url,options={})=>{if(blocked)throw blocked;try{return await transport(url,options);}catch(e){
   if(e.name!=='TypeError'||!auth.request||!stillCurrent())throw e;
-  const result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});
+  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){if(failure.code==='TEMPORARY')blocked=failure;throw failure;}
   if(!stillCurrent())throw Error('Google 연결이 변경되었습니다.');
   if(!Number.isInteger(result.googleStatus))throw Error('Google 연결 응답을 확인하지 못했습니다.');
   return new Response(result.googleStatus===204?null:JSON.stringify(result.data),{status:result.googleStatus,headers:{'Content-Type':'application/json'}});
