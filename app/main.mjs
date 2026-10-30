@@ -1,3 +1,4 @@
+import {conflictLabel,conflictValue} from './conflict-value.mjs';
 import {entryColor} from './event-colors.mjs';
 import {adaptTiming as adaptTimingOnly} from './calendar-form.mjs';
 import {draftData,draftSignature} from './drafts.mjs';
@@ -922,7 +923,7 @@ async function handle(a) {
     case 'google-help':return modalOpen('Google 연결 도움말','<div class="stack"><p>Drive·Calendar·Google 할 일은 필요한 기능만 따로 연결합니다. 연결을 취소하거나 권한을 허용하지 않아도 기기 기록은 지워지지 않습니다.</p><p>“Google에서 확인하지 않은 앱”은 Google의 브랜드·데이터 접근 검증 상태를 알리는 화면입니다. 앱에서 이 경고를 제거하거나 자동으로 통과시킬 수 없습니다. 개발자가 Google 검증을 완료해야 합니다.</p><p>계속 경고가 나오면 Google 창을 닫고 이 화면으로 돌아와 주세요. 기존 계정의 Drive 동기화와 로컬 기록은 유지합니다.</p><p>앱을 업데이트하려면 현재 입력을 저장한 뒤 업데이트 안내를 눌러 주세요. 브라우저 저장 데이터를 지울 필요는 없습니다.</p><p class="help">연결 오류는 해당 기능 카드에 표시하며 마지막 성공 시각을 별도로 보존합니다.</p></div>');
     case 'calendar-conflicts': {
       const entries=calendar.status.conflicts;
-      return modalOpen('Calendar 수정 충돌',entries.length?`<div class="stack">${entries.map(e=>`<section class="panel"><h3>${esc(e.text)}</h3>${Object.entries(e.google.conflicts).map(([key,v])=>`<div class="summary"><strong>${esc(key)}</strong><p>H.PLAN: ${esc(JSON.stringify(v.local))}</p><p>Google: ${esc(JSON.stringify(v.google??v.remote))}</p><div class="row">${button('H.PLAN 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'local']))}`)}${button('Google 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'google']))}`)}</div></div>`).join('')}</section>`).join('')}</div>`:'<p>확인할 수정 충돌이 없습니다.</p>');
+      return modalOpen('Calendar 수정 충돌',entries.length?`<div class="stack">${entries.map(e=>`<section class="panel"><h3>${esc(e.text)}</h3>${Object.entries(e.google.conflicts).map(([key,v])=>`<div class="summary"><strong>${esc(conflictLabel(key))}</strong><p>H.PLAN: ${esc(conflictValue(key,v.local))}</p><p>Google: ${esc(conflictValue(key,v.google??v.remote))}</p><div class="row">${button('H.PLAN 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'local']))}`)}${button('Google 내용 유지',`calendar-resolve:${encodeURIComponent(JSON.stringify([e.id,key,'google']))}`)}</div></div>`).join('')}</section>`).join('')}</div>`:'<p>확인할 수정 충돌이 없습니다.</p>');
     }
     case 'calendar-resolve':closeModal(true);await calendar.resolve(...JSON.parse(decodeURIComponent(arg)));scheduleSync();return handle('calendar-conflicts');
     case 'notifications-enable':await notifications.enable();render();return toast('이 기기의 알림을 켰습니다.');
@@ -1692,5 +1693,6 @@ try {
   setMainHTML(`<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`);
   $("#save-state").textContent = "저장소 오류";
 }
+
 
 
