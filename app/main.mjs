@@ -1423,7 +1423,7 @@ async function handle(a) {
           const input = form.elements.namedItem(key);
           if (input) input.checked = value;
         }
-      if(type==='entry'){adaptEntryForm(form,state());form.dataset.recurrenceChanged=String(!!d.recurrenceChanged);form.dataset.colorChanged=String(!!d.colorChanged);}
+      if(type==='entry'){form.dataset.recurrenceChanged=String(!!d.recurrenceChanged);form.dataset.colorChanged=String(!!d.colorChanged);adaptEntryForm(form,state());}
       return;
     }
     case "help":
@@ -1692,4 +1692,5 @@ try {
   setMainHTML(`<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`);
   $("#save-state").textContent = "저장소 오류";
 }
+
 

@@ -22,7 +22,7 @@ export function adaptColorPreview(form,state){
  const control=form.elements.namedItem('eventColorId'),swatch=form.querySelector('.event-color-swatch');
  if(!control||!swatch)return;
  const entry=state.entries.find(e=>e.id===form.dataset.entryId)||{};
- const project=state.projects.find(p=>p.id===form.elements.namedItem('projectId')?.value);
+ const project=form.elements.namedItem('kind')?.value==='personal'?undefined:state.projects.find(p=>p.id===form.elements.namedItem('projectId')?.value);
  swatch.style.backgroundColor=entryColor({...entry,eventColorId:control.value,color:form.dataset.colorChanged==='true'?null:entry.color},project);
 }
 export function entryForm(state, date, entry = {}, preset = {}) {
@@ -45,7 +45,7 @@ export function entryForm(state, date, entry = {}, preset = {}) {
  ${timingForm(e)}
  ${select("상위 업무", "parentId", [["", "상위 업무 없음"], ...state.entries.filter((x) => !x.deletedAt && !x.parentId && x.id !== e.id && x.date === e.date && x.kind === e.kind && (x.projectId || null) === (e.projectId || null)).map((x) => [x.id, x.text.slice(0, 45)])], e.parentId || "")}
 
- <label class="field event-color-field">일정 색상<span class="event-color-control"><span class="event-color-swatch" aria-hidden="true" style="background:${entryColor(e,state.projects.find(p=>p.id===e.projectId))}"></span><select name="eventColorId" aria-label="일정 색상">${eventColors.map(([id,name])=>`<option value="${esc(id)}" ${id===(e.eventColorId??e.google?.resource?.colorId??'')?'selected':''}>${esc(name)}</option>`).join('')}</select></span></label><p class="help">일정 앞의 색상 막대에 적용됩니다. Google Calendar와 같은 색상을 사용합니다.</p>
+ <label class="field event-color-field">일정 색상<span class="event-color-control"><span class="event-color-swatch" aria-hidden="true" style="background:${entryColor(e,state.projects.find(p=>p.id===e.projectId))}"></span><select name="eventColorId" aria-label="일정 색상">${eventColors.map(([id,name])=>`<option value="${esc(id)}" ${id===(e.eventColorId===undefined?(e.google?.resource?.colorId||''):(e.eventColorId||''))?'selected':''}>${esc(name)}</option>`).join('')}</select></span></label><p class="help">일정 앞의 색상 막대에 적용됩니다. Google Calendar와 같은 색상을 사용합니다.</p>
  <div class="full row">${checkbox("중요 표시", "priority", e.priority)}</div>
  ${area("메모", "notes", e.notes || "", "full")}${field("확인 대상", "target", e.target || "")}
  <div class="full">${area("답변", "answer", e.answer || "")}</div></div>`;
@@ -148,3 +148,4 @@ export function readableVersion(v, key, state={projects:[]}) {
       "",
     )}<small>기기 ${esc(v.device.slice(0, 8))} · ${esc(new Date(v.at).toLocaleString("ko-KR"))}</small>`;
 }
+
