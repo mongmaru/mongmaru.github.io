@@ -3,6 +3,7 @@ import {entryColor} from './event-colors.mjs';
 import {adaptTiming as adaptTimingOnly} from './calendar-form.mjs';
 import {draftData,draftSignature} from './drafts.mjs';
 import {validateForm,showFormErrors,clearFormErrors} from './form-feedback.mjs';
+import {ViewHistory} from './view-history.mjs';
 import { Repository, IndexedStore } from "./core/repository.mjs";
 import { today, clone, dateOK, expandRecurrences } from "./core/domain.mjs";
 import * as model from "./core/sync-model.mjs";
@@ -71,6 +72,7 @@ let repo,
   channel,
   busy = false,
   route = "planner",
+  navigation,
   date = today(),
   calendarMode = innerWidth < 700 ? "week" : "month",
   kind = "all",
@@ -135,6 +137,7 @@ function modalOpen(
   onSave = null,
   { label = "저장", danger = "", draft = null } = {},
 ) {
+  navigation?.openOverlay();
   if (modal.open) modal.close();
   lastFocus = document.activeElement;
   $("#modal-title").textContent = title;
@@ -168,7 +171,7 @@ function rememberDraft() {
  try{localStorage.setItem('hplan-draft',JSON.stringify(draftData(form,draftKey)));return true;}catch{return false;}
 }
 function finishClose() {
- clearTimeout(draftTimer);modal.close();if(sync)sync.editing=false;scheduleSync();draftKey=null;saveHandler=null;render();lastFocus?.isConnected&&lastFocus.focus();
+ clearTimeout(draftTimer);modal.close();navigation?.closeOverlay();if(sync)sync.editing=false;scheduleSync();draftKey=null;saveHandler=null;render();lastFocus?.isConnected&&lastFocus.focus();
 }
 function closeModal(force=false) {
  if(!modal.open||document.querySelector('#draft-choice'))return;
@@ -234,6 +237,7 @@ function setMainHTML(html) {
 }
 function render() {
   if (!repo) return;
+  navigation?.capture();
   applySettings();
   $("#undo").disabled = !repo.record.past.length;
   $("#redo").disabled = !repo.record.future.length;
@@ -1648,6 +1652,13 @@ try {
   route = dateOK(launch.get('date'))?'planner':["projects", "overview"].includes(state().settings.startPage)
     ? state().settings.startPage
     : "planner";
+  navigation=new ViewHistory({read:()=>({route,date,calendarMode,kind,projectFilter,projectOpen,query,overviewFilter,statusFilter,dateFrom,dateTo}),hasModal:()=>modal.open,closeModal:()=>closeModal(),apply:v=>{
+    route=['planner','projects','overview','settings'].includes(v.route)?v.route:'planner';
+    date=dateOK(v.date)?v.date:today();calendarMode=['month','week','year'].includes(v.calendarMode)?v.calendarMode:'month';
+    kind=typeof v.kind==='string'?v.kind:'all';projectFilter=typeof v.projectFilter==='string'?v.projectFilter:'';projectOpen=typeof v.projectOpen==='string'&&getProject(v.projectOpen)?v.projectOpen:null;
+    query=typeof v.query==='string'?v.query:'';overviewFilter=typeof v.overviewFilter==='string'?v.overviewFilter:'today';statusFilter=typeof v.statusFilter==='string'?v.statusFilter:'';dateFrom=dateOK(v.dateFrom)?v.dateFrom:'';dateTo=dateOK(v.dateTo)?v.dateTo:'';
+    selected.clear();render();main.scrollTop=0;
+  }});
   await action({ type: "materialize", through: monthEnd(date) });
   render();
   $("#save-state").textContent = "기기에 저장됨";
@@ -1693,6 +1704,7 @@ try {
   setMainHTML(`<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`);
   $("#save-state").textContent = "저장소 오류";
 }
+
 
 
 

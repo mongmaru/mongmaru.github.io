@@ -1,13 +1,13 @@
 @font-face {
   font-family: NanumSquare;
   src: url(fonts/NanumSquareR.ttf) format("truetype");
-  font-display: swap;
+  font-display: block;
   font-weight: 400;
 }
 @font-face {
   font-family: NanumSquare;
   src: url(fonts/NanumSquareB.ttf) format("truetype");
-  font-display: swap;
+  font-display: block;
   font-weight: 700;
 }
 :root {
@@ -1254,3 +1254,10 @@ button:active:not(:disabled){box-shadow:inset 0 0 0 2px color-mix(in srgb,curren
 button:focus-visible,a:focus-visible{outline:2px solid var(--red);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){.entry{transition:none}}
 body.reduce-motion .entry{transition:none}
+
+@font-face{font-family:NanumSquare;src:url(fonts/NanumSquareEB.ttf) format('truetype');font-display:block;font-weight:800;font-style:normal}
+html{font-synthesis:none}body,button,input,select,textarea,dialog{font-family:NanumSquare,sans-serif;font-synthesis:none}h1,h2,.brand{font-weight:800}
+@media(prefers-reduced-motion:no-preference){.calendar-day:active{background:var(--red-soft)}.connection-state{transition:color 120ms ease,border-color 120ms ease}}
+body.reduce-motion .connection-state{transition:none}
+/* Text content uses only the three shipped NanumSquare faces. */
+code,pre,kbd,samp,option{font-family:NanumSquare,sans-serif;font-synthesis:none}b,strong{font-weight:700}
