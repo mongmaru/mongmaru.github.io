@@ -1,3 +1,4 @@
+import {conflictValue} from './conflict-value.mjs';
 import {eventColors,entryColor} from './event-colors.mjs';
 import {
   esc,
@@ -134,7 +135,7 @@ export function folderForm(state, f = {}) {
 export function readableVersion(v, key, state={projects:[]}) {
   if (v.value === null) return "<p>항목 영구 삭제</p>";
   const x = v.value;
-  return `<strong>${esc(x.text || x.name || key)}</strong>${x.status ? `<p>상태: ${esc(statusLabels[x.status] || x.status)}</p>` : ""}${x.date ? `<p>${esc(x.date)}${x.endDate?' ~ '+esc(x.endDate):''}${x.allDay===false?' · '+esc(x.startTime)+'–'+esc(x.endTime):''}</p>` : ""}${x.projectId?`<p>프로젝트: ${esc(state.projects.find(p=>p.id===x.projectId)?.name||'연결된 프로젝트')}</p>`:''}${x.dueDate?`<p>마감: ${esc(x.dueDate)}</p>`:''}${x.eventColorId?`<p>일정 색상: ${esc(x.eventColorId)}</p>`:''}${x.recurrenceRule?`<p>반복: ${esc(x.recurrenceRule)}</p>`:''}${[
+  return `<strong>${esc(x.text || x.name || "이름 없는 기록")}</strong>${x.status ? `<p>상태: ${esc(statusLabels[x.status] || x.status)}</p>` : ""}${x.date ? `<p>${esc(x.date)}${x.endDate?' ~ '+esc(x.endDate):''}${x.allDay===false?' · '+esc(x.startTime)+'–'+esc(x.endTime):''}</p>` : ""}${x.projectId?`<p>프로젝트: ${esc(state.projects.find(p=>p.id===x.projectId)?.name||'연결된 프로젝트')}</p>`:''}${x.dueDate?`<p>마감: ${esc(x.dueDate)}</p>`:''}${x.eventColorId?`<p>일정 색상: ${esc(conflictValue("eventColor",x.eventColorId))}</p>`:''}${x.recurrenceRule?`<p>반복: ${esc(conflictValue("recurrence",{rule:x.recurrenceRule,exceptions:x.recurrenceExceptions}))}</p>`:''}${[
     "notes",
     "answer",
     "target",
@@ -146,6 +147,7 @@ export function readableVersion(v, key, state={projects:[]}) {
     .map((k) => `<p>${esc(Array.isArray(x[k]) ? x[k].join(", ") : x[k])}</p>`)
     .join(
       "",
-    )}<small>기기 ${esc(v.device.slice(0, 8))} · ${esc(new Date(v.at).toLocaleString("ko-KR"))}</small>`;
+    )}<small>저장한 시각: ${esc(new Date(v.at).toLocaleString("ko-KR"))}</small>`;
 }
+
 
