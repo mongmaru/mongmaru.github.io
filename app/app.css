@@ -1245,3 +1245,12 @@ textarea {
 dialog[open]{animation:hplan-dialog-in 140ms ease-out}
 button,input,select,textarea{transition:background-color 120ms ease,border-color 120ms ease,box-shadow 120ms ease}
 button:active:not(:disabled){box-shadow:inset 0 0 0 2px color-mix(in srgb,currentColor 20%,transparent)}
+/* Native color selection stays accessible; the swatch never intercepts a tap. */
+.event-color-control{position:relative;display:block;min-width:0;width:100%}
+.event-color-control select{width:100%;padding-inline-start:42px;min-height:44px}
+.event-color-swatch{position:absolute;inset-inline-start:15px;top:50%;transform:translateY(-50%);width:14px;height:14px;border-radius:4px;box-shadow:0 0 0 1px #80808066;pointer-events:none;z-index:1}
+@media(hover:hover){.entry:hover{background:var(--soft)}button:not(:disabled):hover{filter:brightness(.97)}}
+.entry{transition:background-color 120ms ease,border-color 120ms ease}
+button:focus-visible,a:focus-visible{outline:2px solid var(--red);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){.entry{transition:none}}
+body.reduce-motion .entry{transition:none}

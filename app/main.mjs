@@ -43,6 +43,7 @@ import {
   entryForm,
   entryValue,
   adaptEntryForm,
+  adaptColorPreview,
   projectForm,
   folderForm,
   } from "./forms.mjs";
@@ -525,7 +526,7 @@ async function editEntry(id = null, preset = {}) {
   if(e?.seriesId||e?.recurrenceRule||e?.recurrence!=='none'&&e?.recurrence)body.insertAdjacentHTML('afterbegin',select('수정 범위','recurrenceScope',[['this','이 일정만'],['following','이 일정과 이후 일정'],['all','전체 반복 일정']],e?.seriesId?'this':'all','full'));
   adaptEntryForm(form, state());
   draftInitial = draftSignature(form);
-  form.onchange = event => {if(event.target.name==='eventColorId')form.dataset.colorChanged='true';if(['kind','status','projectId','date'].includes(event.target.name))adaptEntryForm(form,state());else adaptTimingOnly(form);if(['repeatMode','frequency','interval','weekdays','monthMode','monthPosition','monthWeekday','repeatEnd','repeatUntil','repeatCount'].includes(event.target.name)||event.target.name?.startsWith('repeatDay:'))form.dataset.recurrenceChanged='true';};
+  form.onchange = event => {if(event.target.name==='eventColorId'){form.dataset.colorChanged='true';adaptColorPreview(form,state());}if(['kind','status','projectId','date'].includes(event.target.name))adaptEntryForm(form,state());else adaptTimingOnly(form);if(['repeatMode','frequency','interval','weekdays','monthMode','monthPosition','monthWeekday','repeatEnd','repeatUntil','repeatCount'].includes(event.target.name)||event.target.name?.startsWith('repeatDay:'))form.dataset.recurrenceChanged='true';};
 }
 function editProject(id = null) {
   const p = id ? getProject(id) : {};
@@ -1691,3 +1692,4 @@ try {
   setMainHTML(`<div class="panel stack"><h1>기기 저장소를 확인해 주세요</h1><p>${esc(e.message)}</p><p>비공개 모드나 저장 차단 설정을 확인한 뒤 다시 열어 주세요. 기존 데이터를 초기화하지 않았습니다.</p><button onclick="location.reload()">다시 시도</button></div>`);
   $("#save-state").textContent = "저장소 오류";
 }
+

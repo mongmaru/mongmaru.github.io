@@ -15,6 +15,21 @@ const comparable = (value, key) => {
     // Keep immutable version heads/clocks; equivalence only controls review.
     delete copy.createdAt;
     delete copy.updatedAt;
+    // Completion time is generated independently by status/period/Google
+    // reconciliation. The status and every actual field remain comparable.
+    if (["done", "answered"].includes(copy.status)) delete copy.doneAt;
+    // Older entries omit calendar defaults; saving the same form materializes
+    // these fields. Compare their effective meaning without rewriting heads.
+    const defaults = {
+      allDay: true, endDate: null, startTime: null, endTime: null,
+      timeZone: "Asia/Seoul", recurrenceRule: null, recurrenceExceptions: [],
+      recurrenceLines: copy.google?.resource?.recurrence || [],
+      notifications: {enabled:false,beforeMinutes:5,repeatMinutes:5,count:5},
+      origin: "hplan", eventColorId: copy.google?.resource?.colorId || null,
+      seriesEdited: false,
+    };
+    for (const [field, fallback] of Object.entries(defaults))
+      if (copy[field] === undefined) copy[field] = fallback;
     if (copy.google) {
       delete copy.google.etag;
       delete copy.google.resource;
