@@ -1261,3 +1261,4 @@ html{font-synthesis:none}body,button,input,select,textarea,dialog{font-family:Na
 body.reduce-motion .connection-state{transition:none}
 /* Text content uses only the three shipped NanumSquare faces. */
 code,pre,kbd,samp,option{font-family:NanumSquare,sans-serif;font-synthesis:none}b,strong{font-weight:700}
+.manual-guide,.manual-guide>*{min-width:0;max-width:100%}.manual-guide p,.manual-guide h3,.manual-guide a{overflow-wrap:anywhere;word-break:break-word}
