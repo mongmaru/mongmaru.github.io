@@ -15,7 +15,7 @@ export class ViewHistory {
   if(JSON.stringify(next.view)===JSON.stringify(old))return;
   // Query/filter edits update this view; route/date/detail transitions preserve it.
   const key=v=>JSON.stringify([v.route,v.date,v.projectOpen,v.calendarMode,v.overviewFilter]);
-  this.write(next,key(next.view)!==key(old||{})&&this.pushes<this.limit);
+  this.write(next,key(next.view)!==key(old||{}));
  }
  openOverlay(){
   if(this.pendingClose){this.reopening=true;return;}
@@ -46,3 +46,4 @@ export class ViewHistory {
  }
  stop(){this.win.removeEventListener('popstate',this.listener);}
 }
+
