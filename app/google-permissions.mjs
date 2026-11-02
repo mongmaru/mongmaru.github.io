@@ -14,7 +14,7 @@ export function featureState({connected,enabled,granted,busy,error,lastSuccess,o
  if(!granted)return {code:'permission',label:'추가 권한 필요'};
  if(!enabled)return {code:'disabled',label:'사용 안 함'};
  if(offline)return {code:'offline',label:'오프라인 · 대기'};
- if(busy)return {code:'syncing',label:'동기화 중'};
+ if(busy)return {code:'syncing',label:error?'다시 연결하는 중':'동기화 중'};
  if(error)return {code:'error',label:'연결 확인 필요'};
  return lastSuccess?{code:'connected',label:'동기화 완료'}:{code:'pending',label:'첫 동기화 대기'};
 }

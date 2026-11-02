@@ -24,11 +24,12 @@
   <body>
     <div id="app" class="shell">
       <header class="topbar">
+        <div class="topbar-leading"><button id="navigation-toggle" class="icon-button ghost" type="button" data-action="layout:navigationCollapsed" aria-controls="primary-navigation" aria-label="주 메뉴 접기" aria-expanded="true"></button>
         <a href="#planner" class="brand" aria-label="H.PLAN 플래너"
           ><img src="icons/icon.svg" alt="" width="28" height="28" /><span
             >H.PLAN</span
           ></a
-        >
+        ></div>
         <div class="top-actions">
           <span id="save-state" role="status">불러오는 중</span
           ><button
@@ -48,7 +49,7 @@
       <main id="main" tabindex="-1">
         <div class="loading">기록을 안전하게 불러오고 있습니다…</div>
       </main>
-      <nav class="bottom-nav" aria-label="주 메뉴">
+      <nav id="primary-navigation" class="bottom-nav" aria-label="주 메뉴">
         <button data-route="planner"></button
         ><button data-route="projects"></button
         ><button data-route="overview"></button

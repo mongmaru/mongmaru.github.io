@@ -1,23 +1,40 @@
 import {CalendarClient} from './core/calendar-client.mjs';
 import {CalendarSync} from './core/calendar-sync.mjs';
 import {permissionState,featureState} from './google-permissions.mjs';
-export function describeErrors(errors=[]){const messages=[...new Set(errors.map(e=>/failed to fetch|networkerror|load failed/i.test(e.message||'')?'Google에 연결하지 못했습니다. 연결을 유지하며 잠시 후 다시 시도합니다.':e.message||'Google 연결을 확인해 주세요.'))];return messages.slice(0,3).join(' · ')+(messages.length>3?' · 기타 오류':'' );}
+import {connectionMessage} from './connection-message.mjs';
+export function describeErrors(errors=[]){const messages=[...new Set(errors.map(connectionMessage))];return messages.slice(0,3).join(' · ')+(messages.length>3?' · 기타 오류':'' );}
 export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.fetch.bind(globalThis)){
- const secret=auth.credential?.secret,current=()=>stillCurrent()&&secret===auth.credential?.secret;let blocked=null,proxyOnly=false;
- const proxy=async(url,options)=>{
+ const secret=auth.credential?.secret,current=()=>stillCurrent()&&secret===auth.credential?.secret,channels=new Map();
+ const proxy=async(url,options,channel)=>{
   if(!current())throw Error('Google 연결이 변경되었습니다.');
-  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))blocked=failure;throw failure;}
+  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))channel.blocked=failure;throw failure;}
   if(!current())throw Error('Google 연결이 변경되었습니다.');
   if(!Number.isInteger(result.googleStatus))throw Error('Google 연결 응답을 확인하지 못했습니다.');
   return new Response(result.googleStatus===204?null:JSON.stringify(result.data),{status:result.googleStatus,headers:{'Content-Type':'application/json'}});
  };
  return async(url,options={})=>{
-  if(blocked)throw blocked;if(!current())throw Error('Google 연결이 변경되었습니다.');
+  // Calendar and Tasks use separate Google hosts. Failure on one must not
+  // suppress the other's healthy direct route during this shared sync run.
+  const host=new URL(url).origin;
+  if(!channels.has(host))channels.set(host,{blocked:null,proxyOnly:false});
+  const channel=channels.get(host);
+  if(channel.blocked)throw channel.blocked;if(!current())throw Error('Google 연결이 변경되었습니다.');
   // A failed write response is ambiguous. Send mutations through the broker once.
-  if(auth.request&&(proxyOnly||(options.method||'GET')!=='GET'))return proxy(url,options);
-  try{return await transport(url,options);}catch(e){
+  if(auth.request&&(channel.proxyOnly||(options.method||'GET')!=='GET'))return proxy(url,options,channel);
+  try{
+   const response=await transport(url,options);
+   // fetch resolves at headers. Finish successful reads inside this boundary so
+   // a suspended mobile connection during the body can use the same fallback.
+   // Keep the final status visible to CalendarClient (not just a replacement
+   // .text method), because the broker may return401 and require token renewal.
+   if(!response.ok||response.status===204)return response;
+   const text=await response.text();
+   if(text.length>20*1024*1024)throw Error('Google 일정 응답이 너무 큽니다.');
+   if(!current())throw Error('Google 연결이 변경되었습니다.');
+   return new Response(text,{status:response.status,headers:response.headers});
+  }catch(e){
    if(!['TypeError','TimeoutError','AbortError'].includes(e.name)||!auth.request||!current())throw e;
-   proxyOnly=true;return proxy(url,options);
+   channel.proxyOnly=true;return proxy(url,options,channel);
   }
  };
 }

@@ -11,6 +11,8 @@ export function parseDraftKey(key) {
   return { type: key.slice(0, index), id: key.slice(index + 1) };
 }
 const paths = {
+  panel: "M3 4h18v16H3ZM9 4v16m5-11-3 3 3 3",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Zm10-3a3 3 0 1 1 0 6 3 3 0 0 1 0-6",
   calendar: "M8 2v4m8-4v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Z",
   folder: "M3 6h7l2 3h9v11H3Zm0 0V4h7l2 2",
   grid: "M3 3h7v7H3Zm11 0h7v7h-7ZM3 14h7v7H3Zm11 0h7v7h-7Z",

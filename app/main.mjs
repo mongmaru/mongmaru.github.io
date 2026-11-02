@@ -4,6 +4,7 @@ import {adaptTiming as adaptTimingOnly} from './calendar-form.mjs';
 import {draftData,draftSignature} from './drafts.mjs';
 import {validateForm,showFormErrors,clearFormErrors} from './form-feedback.mjs';
 import {ViewHistory} from './view-history.mjs';
+import {ViewLayout} from './view-layout.mjs';
 import { Repository, IndexedStore } from "./core/repository.mjs";
 import { today, clone, dateOK, expandRecurrences } from "./core/domain.mjs";
 import * as model from "./core/sync-model.mjs";
@@ -55,6 +56,14 @@ const $ = (s) => document.querySelector(s),
   form = $("#modal-form"),
   body = $("#modal-body"),
   footer = $("#modal-footer");
+const viewLayout=new ViewLayout({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value)});
+function renderLayout(){
+ const collapsed=viewLayout.value.navigationCollapsed,toggle=$('#navigation-toggle');
+ $('#primary-navigation').hidden=collapsed;
+ toggle.innerHTML=icon('panel');toggle.setAttribute('aria-label',collapsed?'주 메뉴 펼치기':'주 메뉴 접기');toggle.setAttribute('aria-expanded',String(!collapsed));
+ document.body.classList.toggle('navigation-collapsed',collapsed);
+}
+function sectionControls(){return `<div class="section-visibility" role="group" aria-label="날짜별 표시 항목"><span class="section-fixed">업무 일정</span>${[['personal','개인 할 일'],['question','확인·질문']].map(([key,label])=>`<button type="button" data-action="layout:${key}" aria-label="${label} ${viewLayout.shows(key)?'접기':'펼치기'}" aria-pressed="${viewLayout.shows(key)}">${icon(viewLayout.shows(key)?'eye':'plus')}<span>${label}</span></button>`).join('')}</div>`;}
 const createAuth = () =>
   AUTH_SERVER_URL
     ? new PersistentAuth(AUTH_SERVER_URL)
@@ -239,6 +248,7 @@ function render() {
   if (!repo) return;
   navigation?.capture();
   applySettings();
+  renderLayout();
   $("#undo").disabled = !repo.record.past.length;
   $("#redo").disabled = !repo.record.future.length;
   for (const [id, label, symbol] of nav) {
@@ -338,6 +348,7 @@ function planner() {
   const entries = expandEntries(activeEntries(),date,date).filter(
     (e) =>
       e.date <= date && (e.endDate || e.date) >= date &&
+      viewLayout.shows(e.kind) &&
       (kind === "all" || e.kind === kind) &&
       (!projectFilter || e.projectId === projectFilter) &&
       (!statusFilter || e.status === statusFilter),
@@ -353,7 +364,7 @@ function planner() {
     )
     .join(
       "",
-    )}</div><input type="date" aria-label="날짜 바로 선택" id="jump-date" value="${date}" style="flex:1;width:120px;padding:7px;font-size:14px"></div>${calendar}</section><section class="day-panel"><div class="day-header"><div class="view-title"><h2>${niceDate(date)}</h2><span class="count">${entries.length}</span></div><button class="icon-button ghost" aria-label="일정 필터" data-action="planner-filter">${icon("filter")}</button></div><div class="chips">${[["all", "전체"], ...Object.entries(kindLabels)].map(([id, label]) => `<button class="${kind === id ? "active" : ""}" data-action="kind:${id}">${label}</button>`).join("")}${button("날짜·복사·양식", "day-tools")}</div>${selectedBar()}<div class="agenda">${agenda(entries)}</div></section></div>`);
+    )}</div><input type="date" aria-label="날짜 바로 선택" id="jump-date" value="${date}" style="flex:1;width:120px;padding:7px;font-size:14px"></div>${calendar}</section><section class="day-panel"><div class="day-header"><div class="view-title"><h2>${niceDate(date)}</h2><span class="count">${entries.length}</span></div><button class="icon-button ghost" aria-label="일정 필터" data-action="planner-filter">${icon("filter")}</button></div>${sectionControls()}<div class="chips">${button("날짜·복사·양식", "day-tools")}${kind!=="all"?`<span class="help">유형 필터: ${esc(kindLabels[kind])}</span>`:""}</div>${selectedBar()}<div class="agenda">${agenda(entries)}</div></section></div>`);
 }
 function projects() {
   if (projectOpen) {
@@ -1053,6 +1064,12 @@ async function handle(a) {
     case "calendar":
       calendarMode = arg;
       return render();
+    case "layout":
+      viewLayout.toggle(arg);
+      if((arg==='personal'||arg==='question')&&!viewLayout.shows(arg)){
+        for(const id of selected)if(getEntry(id)?.kind===arg)selected.delete(id);
+      }
+      return render();
     case "kind":
       kind = arg;
       return render();
@@ -1434,7 +1451,7 @@ async function handle(a) {
     case "help":
       return modalOpen(
         "H.PLAN 사용 안내",
-        `<div class="stack manual-guide"><h3>3.3.3 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive 기기 간 수정 충돌과 Calendar 수정 충돌은 별개이며 각 화면에서 날짜·상태·프로젝트·메모를 비교해 유지할 내용을 선택합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
+        `<div class="stack manual-guide"><h3>3.3.3 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive 기기 간 수정 충돌과 Calendar 수정 충돌은 별개이며 각 화면에서 날짜·상태·프로젝트·메모를 비교해 유지할 내용을 선택합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
       );
     case "report": {
       const { reportDialog } = await import("./reports-ui.mjs");
