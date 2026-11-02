@@ -5,6 +5,7 @@ import {draftData,draftSignature} from './drafts.mjs';
 import {validateForm,showFormErrors,clearFormErrors} from './form-feedback.mjs';
 import {ViewHistory} from './view-history.mjs';
 import {ViewLayout} from './view-layout.mjs';
+import {repositoryViewKey} from './repository-view.mjs';
 import { Repository, IndexedStore } from "./core/repository.mjs";
 import { today, clone, dateOK, expandRecurrences } from "./core/domain.mjs";
 import * as model from "./core/sync-model.mjs";
@@ -222,7 +223,7 @@ function applySettings() {
   document.body.classList.toggle("dense", s.density === "compact");
   document.documentElement.style.setProperty("--text", `${s.fontSize + 2}px`);
 }
-let lastMainHTML, pendingMainHTML, mainPointer = null;
+let lastMainHTML, pendingMainHTML, lastRepositoryView, mainPointer = null;
 main.addEventListener('pointerdown', event => { mainPointer = event.pointerId; }, true);
 function releaseMainPointer(event) {
   if (event.type !== 'blur' && event.pointerId !== mainPointer) return;
@@ -246,6 +247,7 @@ function setMainHTML(html) {
 }
 function render() {
   if (!repo) return;
+  lastRepositoryView = repositoryViewKey(repo.record, today());
   navigation?.capture();
   applySettings();
   renderLayout();
@@ -1645,7 +1647,12 @@ try {
   navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt,e.data.sessionId).catch(()=>{});});
   repo.subscribe(() => {
     nativeBridge?.update();
-    if (!modal.open) render();
+    if (!modal.open) {
+      if (route !== 'settings' && lastRepositoryView === repositoryViewKey(repo.record, today())) {
+        renderNotice();
+        renderSyncStatus();
+      } else render();
+    }
   });
   if ("BroadcastChannel" in window) {
     channel = new BroadcastChannel("hplan-mobile");

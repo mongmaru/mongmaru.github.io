@@ -111,13 +111,26 @@ function recurrenceDates(entry, through, from = entry.date) {
   }
   return finish(result);
 }
+// Reuse immutable Intl formatters, never formatted dates or converted instants.
+// Bounded per format; construct first so invalid zones cannot enter the cache.
+const zoneFormatters={date:new Map(),parts:new Map()};
+function zoneFormatter(kind,timeZone) {
+  const cache=zoneFormatters[kind];
+  // Only cache explicit string zones; preserve native validation/coercion otherwise.
+  if(typeof timeZone==='string'&&cache.has(timeZone))return cache.get(timeZone);
+  const options={timeZone,year:'numeric',month:'2-digit',day:'2-digit'};
+  if(kind==='parts')Object.assign(options,{hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+  const formatter=new Intl.DateTimeFormat(kind==='date'?'sv-SE':'en-CA',options);
+  if(typeof timeZone==='string'){if(cache.size>=64)cache.delete(cache.keys().next().value);cache.set(timeZone,formatter);}
+  return formatter;
+}
 function dateInZone(now = new Date(), timeZone='Asia/Seoul') {
-  return new Intl.DateTimeFormat('sv-SE',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now));
+  return zoneFormatter('date',timeZone).format(new Date(now));
 }
 function zonedEpoch(date,time='09:00',timeZone='Asia/Seoul') {
   const [year,month,day]=date.split('-').map(Number),[hour,minute]=time.split(':').map(Number);
   const target=Date.UTC(year,month-1,day,hour,minute);let guess=target;
-  const fmt=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+  const fmt=zoneFormatter('parts',timeZone);
   for(let i=0;i<4;i++) {
     const p=Object.fromEntries(fmt.formatToParts(new Date(guess)).map(x=>[x.type,x.value]));
     const seen=Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second),diff=target-seen;
