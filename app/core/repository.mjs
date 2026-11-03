@@ -420,6 +420,7 @@ export class Repository {
       const meta = r.accounts[account];
       let merged = meta.graph;
       for (const graph of snapshots) merged = model.merge(merged, graph);
+      merged = model.reconcileLatest(merged);
       const unresolved =
         model.conflicts(merged).length || model.repairs(merged, r.state).length;
       const next = unresolved ? null : model.project(merged, r.state);
@@ -436,6 +437,10 @@ export class Repository {
       }
       return r;
     });
+  }
+  recoveries(account=this.record.activeAccount) { return this.syncMeta(account)?model.recoveries(this.syncMeta(account).graph):[]; }
+  restoreRevision(account,key,revision) {
+    return this.update(r=>{if(r.activeAccount!==account)throw Error("Google 계정을 다시 확인해 주세요.");capture(r);addBackup(r,"before-drive-restore");r.accounts[account].graph=model.restoreRevision(r.accounts[account].graph,key,revision);return r;});
   }
   resolve(account, key, revision) {
     return this.update((r) => {

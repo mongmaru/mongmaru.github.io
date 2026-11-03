@@ -15,6 +15,7 @@ const comparable = (value, key) => {
     // Keep immutable version heads/clocks; equivalence only controls review.
     delete copy.createdAt;
     delete copy.updatedAt;
+    delete copy.contentEdit;
     // Completion time is generated independently by status/period/Google
     // reconciliation. The status and every actual field remain comparable.
     if (["done", "answered"].includes(copy.status)) delete copy.doneAt;
@@ -126,6 +127,7 @@ function check(g) {
   )
     throw Error("동기화 데이터가 올바르지 않습니다.");
   checkCalendarAccounts(g.calendarAccounts);
+  checkRecovery(g.recovery);
   for (const [key, versions] of Object.entries(g.records)) {
     const p = key.indexOf("/"),
       collection = key.slice(0, p),
@@ -198,6 +200,8 @@ function merge(a, b) {
   check(b);
   const result = clone(a);
   result.calendarAccounts=mergeCalendarAccounts(a.calendarAccounts,b.calendarAccounts);
+  const recovery = mergeRecovery(a.recovery, b.recovery);
+  if (recovery.length) result.recovery = recovery;
   for (const key of Object.keys(b.records))
     result.records[key] = heads([
       ...(result.records[key] || []),
@@ -244,6 +248,8 @@ function capture(graph, before, after) {
     old = recordMap(before),
     next = recordMap(after);
   g.calendarAccounts=mergeCalendarAccounts(graph.calendarAccounts,after.calendarAccounts);
+  const recovery = mergeRecovery(graph.recovery, after.syncRecovery);
+  if (recovery.length) g.recovery = recovery;
   for (const key of new Set([...Object.keys(old), ...Object.keys(next)]))
     if (stable(old[key]) !== stable(next[key])) {
       const previous = g.records[key] || [],
@@ -276,6 +282,8 @@ function rawProject(g, local) {
     );
   const state = clone(local);
   state.calendarAccounts=mergeCalendarAccounts(local.calendarAccounts,g.calendarAccounts);
+  const recovery = mergeRecovery(local.syncRecovery, g.recovery);
+  if (recovery.length) state.syncRecovery = recovery;
   state.calendarDeletions={};
   for (const c of COLLECTIONS) state[c] = [];
   for (const key of Object.keys(g.records).sort()) {
@@ -357,7 +365,7 @@ function resolve(graph, key, revision) {
   return g;
 }
 function contentEqual(a, b) {
-  return stable(a.calendarAccounts||{})===stable(b.calendarAccounts||{}) && stable(a.calendarDeletions||{})===stable(b.calendarDeletions||{}) && COLLECTIONS.every(
+  return stable(a.syncRecovery||[])===stable(b.syncRecovery||[]) && stable(a.calendarAccounts||{})===stable(b.calendarAccounts||{}) && stable(a.calendarDeletions||{})===stable(b.calendarDeletions||{}) && COLLECTIONS.every(
     (c) =>
       stable([...(a[c] || [])].sort((x, y) => x.id.localeCompare(y.id))) ===
       stable([...(b[c] || [])].sort((x, y) => x.id.localeCompare(y.id))),
@@ -365,7 +373,84 @@ function contentEqual(a, b) {
 }
 function fingerprint(graph) {
   // Account cutoffs are shared state even when no record revision changes.
-  return stable({ records: graph.records, calendarAccounts: graph.calendarAccounts || {} });
+  return stable({ records: graph.records, calendarAccounts: graph.calendarAccounts || {}, recovery: graph.recovery || [] });
+}
+// Recovery is part of the shared snapshot and ordinary planner backups. Original
+// revisions are retained verbatim; the replacement has a new causal clock.
+function checkRecovery(items) {
+  if (items === undefined) return;
+  if (!Array.isArray(items) || items.length > 10000) throw Error('동기화 복구 기록이 올바르지 않습니다.');
+  const ids = new Set();
+  for (const item of items) {
+    if (!item || !safeId(item.id) || ids.has(item.id) || typeof item.key !== 'string' ||
+        !safeId(item.selectedId) || !Number.isFinite(Date.parse(item.at)) ||
+        !Array.isArray(item.versions) || !item.versions.some(v => v.id === item.selectedId))
+      throw Error('동기화 복구 기록이 올바르지 않습니다.');
+    ids.add(item.id);
+    check({ ...empty('recovery-check'), records: { [item.key]: item.versions } });
+  }
+}
+function mergeRecovery(a, b) {
+  checkRecovery(a); checkRecovery(b);
+  const items = new Map();
+  for (const item of [...(a || []), ...(b || [])]) {
+    if (items.has(item.id) && stable(items.get(item.id)) !== stable(item)) throw Error('서로 다른 복구 기록에 같은 ID가 있습니다.');
+    items.set(item.id, clone(item));
+  }
+  const merged = [...items.values()].sort((x,y) => x.id.localeCompare(y.id));
+  checkRecovery(merged);
+  return merged;
+}
+function recoveries(graph) { check(graph); return clone(graph.recovery || []); }
+function editTime(version) {
+  const value = version.value;
+  if (!value || value.deletedAt) return NaN;
+  const edit = value.contentEdit;
+  // Legacy Google observations, generated instances and automatic completion
+  // did not distinguish observation time from user edits. Do not guess.
+  if (edit ? !['user','google'].includes(edit.source) :
+      value.google || value.origin === 'google' || value.seriesId && !value.seriesEdited ||
+      value.endDate && ['done','answered'].includes(value.status)) return NaN;
+  const at = Date.parse(edit?.at || value.updatedAt), created = Date.parse(value.createdAt);
+  return Number.isFinite(at) && at <= Date.parse(version.at) && (!Number.isFinite(created) || at >= created) ? at : NaN;
+}
+function protectedLink(value) {
+  const google = clone(value.google || null);
+  if (google) {
+    delete google.etag; delete google.resource; delete google.calendarColor;
+    if (google.generation === 0) delete google.generation;
+    if (google.deleted === false) delete google.deleted;
+  }
+  return stable({google, origin:value.origin || 'hplan', calendarTarget:value.calendarTarget || null});
+}
+function remember(graph, key, versions, selectedId) {
+  const item = {id:randomUUID(),key,selectedId,at:new Date().toISOString(),versions:clone(versions)};
+  graph.recovery = mergeRecovery(graph.recovery, [item]);
+}
+function reconcileLatest(graph) {
+  check(graph); const result = clone(graph);
+  for (const {key, versions} of conflicts(graph)) {
+    if (!key.startsWith('entries/') || versions.some(v => !v.value || v.value.deletedAt || Object.keys(v.value.google?.conflicts || {}).length)) continue;
+    if (new Set(versions.map(v => protectedLink(v.value))).size !== 1) continue;
+    const times = versions.map(editTime);
+    if (times.some(time => !Number.isFinite(time))) continue;
+    const latest = Math.max(...times), winners = versions.filter((v,i) => times[i] === latest);
+    if (new Set(winners.map(v => comparable(v.value,key))).size !== 1) continue;
+    const selected = winners[0];
+    remember(result,key,versions,selected.id);
+    put(result,key,selected.value);
+  }
+  return result;
+}
+function restoreRevision(graph, key, revision) {
+  check(graph);
+  const selected = (graph.recovery || []).filter(item => item.key === key).flatMap(item => item.versions).find(v => v.id === revision);
+  if (!selected?.value || selected.value.deletedAt || !graph.records[key]) throw Error('복구할 내용을 찾을 수 없습니다. 목록을 새로 확인해 주세요.');
+  const result = clone(graph), value = clone(selected.value), at = new Date().toISOString();
+  remember(result,key,graph.records[key],graph.records[key][0].id);
+  value.updatedAt = at; value.contentEdit = {source:'user',at};
+  put(result,key,value);
+  return result;
 }
 function checkCalendarAccounts(accounts) {
   if(accounts===undefined)return;
@@ -394,5 +479,8 @@ export {
   contentEqual,
   fingerprint,
   stable,
+  reconcileLatest,
+  recoveries,
+  restoreRevision,
   COLLECTIONS,
 };

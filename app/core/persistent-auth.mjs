@@ -1,4 +1,5 @@
 import { IndexedAuthVault } from "./auth-vault.mjs";
+import { requestDeadline } from "./request-deadline.mjs";
 
 const cancelled = () =>
   Object.assign(Error("Google 연결이 변경되어 이전 요청을 중지했습니다."), {
@@ -51,8 +52,10 @@ export class PersistentAuth {
   async request(path, credential, { method = "GET", body: requestBody } = {}, retried=false) {
     const generation=this.generation,safeRead=method==='GET'||path==='/v1/google'&&(requestBody?.method||'GET')==='GET';
     const retry=async()=>{await this.sleep(250);if(generation!==this.generation)throw cancelled();return this.request(path,credential,{method,body:requestBody},true);};
-    let res,body;
+    let res,body,stage='broker-headers';const started=this.now();
+    const diagnostic=(reason,status)=>({stage,reason,attempt:retried?2:1,elapsedMs:Math.max(0,this.now()-started),...(status?{status}: {})});
     try {
+      await requestDeadline(async signal=>{
       res = await this.fetch(credential.server + path, {
         method,
         ...(requestBody === undefined ? {} : { body: JSON.stringify(requestBody) }),
@@ -63,24 +66,28 @@ export class PersistentAuth {
         credentials: "omit",
         cache: "no-store",
         redirect: "error",
-        signal: AbortSignal.timeout(25000),
+        signal,
       });
+      stage='broker-body';
       try{body=await res.json();}catch(failure){if(/Timeout|Abort|TypeError/.test(failure.name||''))throw failure;body={};}
+      },25000,{now:this.now});
     } catch (failure) {
+      this.lastRequest=diagnostic(/Timeout|Abort/.test(failure.name||'')?'timeout':'network');
       if(!retried&&safeRead)return retry();
       const stage=path.startsWith('/v1/session')?'계정 확인':path==='/v1/google'?'Google 대체 통신':'알림 연결',reason=/Timeout|Abort/.test(failure.name||'')?'시간 초과':'네트워크';
       throw Object.assign(
         Error(
           `자동 연결을 잠시 확인하지 못했습니다. 기록은 기기에 보관됩니다. [${stage} · ${reason}]`,
         ),
-        { code: "TEMPORARY" },
+        { code: "TEMPORARY",diagnostic:this.lastRequest },
       );
     }
+    this.lastRequest=diagnostic(res.ok?'success':'http',res.status);
     if(!res.ok&&!retried&&safeRead&&(body.code||'TEMPORARY')==='TEMPORARY'&&[408,429,500,502,503,504].includes(res.status))return retry();
     if (!res.ok)
       throw Object.assign(
         Error(body.message || "자동 연결 서버에 잠시 연결하지 못했습니다."),
-        { code: body.code || "TEMPORARY",status:res.status },
+        { code: body.code || "TEMPORARY",status:res.status,diagnostic:{...this.lastRequest,...(/^[a-z-]{1,40}$/.test(body.stage||'')?{stage:body.stage}: {})} },
       );
     return body;
   }

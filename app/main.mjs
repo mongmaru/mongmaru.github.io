@@ -20,7 +20,7 @@ import { googlePanel } from './google-ui.mjs';
 import {permissionState} from './google-permissions.mjs';
 import {AutomaticSync} from './auto-sync.mjs';
 import {syncLabel} from './sync-status.mjs';
-import {renderDriveConflicts} from './conflict-ui.mjs';
+import {renderDriveConflicts,renderDriveRecoveries} from './conflict-ui.mjs';
 import { expandEntries } from './core/calendar-recurrence.mjs';
 import {
   GOOGLE_WEB_CLIENT_ID,
@@ -1337,7 +1337,7 @@ async function handle(a) {
     case "drive-manage":
       return modalOpen(
         "Google 연동 관리",
-        `<div class="stack"><p>저장 위치: 내 드라이브 / H.PLAN</p><p class="help">자동 백업은 하루 1회, 기기별 최근 30개입니다. ${AUTH_SERVER_URL ? "한 번 연결하면 다음 실행에도 연결을 기억하고 자동 동기화합니다. Google 권한을 철회하거나 기기 데이터를 삭제하면 다시 연결해야 합니다." : "웹앱을 열었을 때 동기화하며 Google 연결이 만료되면 갱신이 필요합니다."}</p><div class="action-list">${button("계정 연결 또는 변경", "drive-connect", "", "cloud")}${button("Drive 백업 만들기", "drive-backup", "", "download")}${button("Drive 폴더 열기", "drive-folder", "", "folder")}${button("충돌 내용 확인", "drive-conflicts", "", "note")}${button("연결 해제", "drive-disconnect", "danger")}</div></div>`,
+        `<div class="stack"><p>저장 위치: 내 드라이브 / H.PLAN</p><p class="help">자동 백업은 하루 1회, 기기별 최근 30개입니다. ${AUTH_SERVER_URL ? "한 번 연결하면 다음 실행에도 연결을 기억하고 자동 동기화합니다. Google 권한을 철회하거나 기기 데이터를 삭제하면 다시 연결해야 합니다." : "웹앱을 열었을 때 동기화하며 Google 연결이 만료되면 갱신이 필요합니다."}</p><div class="action-list">${button("계정 연결 또는 변경", "drive-connect", "", "cloud")}${button("Drive 백업 만들기", "drive-backup", "", "download")}${button("Drive 폴더 열기", "drive-folder", "", "folder")}${button("충돌 내용 확인", "drive-conflicts", "", "note")}${button("자동 반영 이전 내용", "drive-recoveries", "", "clock")}${button("연결 해제", "drive-disconnect", "danger")}</div></div>`,
       );
     case "drive-connect":
       closeModal(true);
@@ -1387,6 +1387,15 @@ async function handle(a) {
           "noopener",
         );
       return;
+    case "drive-recoveries": {
+      if(!repo.syncMeta())return toast("Google 계정을 연결해 주세요.");
+      return modalOpen("자동 반영 이전 내용",renderDriveRecoveries(repo.recoveries(),state(),Math.max(20,Number(arg)||20)));
+    }
+    case "drive-restore-version": {
+      const i=arg.lastIndexOf(":"),key=arg.slice(0,i),revision=arg.slice(i+1);
+      if(sync?.busy)throw Error("동기화가 끝난 후 다시 선택해 주세요.");
+      return modalOpen("이전 내용 복원","<p>선택한 내용을 새로운 수정으로 저장할까요? 현재 내용도 복구 기록에 보관합니다.</p>",async()=>{await repo.restoreRevision(repo.record.activeAccount,key,revision);closeModal(true);scheduleSync();toast("이전 내용을 복원했습니다.");},{label:"복원"});
+    }
     case "drive-conflicts":
       return conflicts();
     case "resolve": {
@@ -1453,7 +1462,7 @@ async function handle(a) {
     case "help":
       return modalOpen(
         "H.PLAN 사용 안내",
-        `<div class="stack manual-guide"><h3>3.3.3 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive 기기 간 수정 충돌과 Calendar 수정 충돌은 별개이며 각 화면에서 날짜·상태·프로젝트·메모를 비교해 유지할 내용을 선택합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
+        `<div class="stack manual-guide"><h3>3.4.0 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive는 실제 수정 순서가 확인되면 최근 내용을 자동 반영합니다. 설정 → Google 연동 · Drive → 연결 관리 → 자동 반영 이전 내용에서 이전 기록을 복원할 수 있습니다. 삭제나 수정 순서가 불확실한 경우만 내용을 확인합니다. Calendar 수정 충돌은 별도로 확인합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
       );
     case "report": {
       const { reportDialog } = await import("./reports-ui.mjs");

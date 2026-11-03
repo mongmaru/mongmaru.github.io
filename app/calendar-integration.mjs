@@ -1,13 +1,14 @@
+import {requestDeadline} from './core/request-deadline.mjs';
 import {CalendarClient} from './core/calendar-client.mjs';
 import {CalendarSync} from './core/calendar-sync.mjs';
 import {permissionState,featureState} from './google-permissions.mjs';
 import {connectionMessage} from './connection-message.mjs';
 export function describeErrors(errors=[]){const messages=[...new Set(errors.map(connectionMessage))];return messages.slice(0,3).join(' · ')+(messages.length>3?' · 기타 오류':'' );}
-export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.fetch.bind(globalThis)){
+export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.fetch.bind(globalThis),onDiagnostic=()=>{}){
  const secret=auth.credential?.secret,current=()=>stillCurrent()&&secret===auth.credential?.secret,channels=new Map();
  const proxy=async(url,options,channel)=>{
   if(!current())throw Error('Google 연결이 변경되었습니다.');
-  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))channel.blocked=failure;throw failure;}
+  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){const d=failure.diagnostic;if(d)onDiagnostic({service:new URL(url).hostname==='tasks.googleapis.com'?'tasks':'calendar',stage:d.stage,reason:d.reason,attempt:d.attempt,elapsedMs:d.elapsedMs});if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))channel.blocked=failure;throw failure;}
   if(!current())throw Error('Google 연결이 변경되었습니다.');
   if(!Number.isInteger(result.googleStatus))throw Error('Google 연결 응답을 확인하지 못했습니다.');
   return new Response(result.googleStatus===204?null:JSON.stringify(result.data),{status:result.googleStatus,headers:{'Content-Type':'application/json'}});
@@ -22,7 +23,8 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
   // A failed write response is ambiguous. Send mutations through the broker once.
   if(auth.request&&(channel.proxyOnly||(options.method||'GET')!=='GET'))return proxy(url,options,channel);
   try{
-   const response=await transport(url,options);
+   return await requestDeadline(async signal=>{
+   const response=await transport(url,{...options,signal});
    // fetch resolves at headers. Finish successful reads inside this boundary so
    // a suspended mobile connection during the body can use the same fallback.
    // Keep the final status visible to CalendarClient (not just a replacement
@@ -32,6 +34,7 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
    if(text.length>20*1024*1024)throw Error('Google 일정 응답이 너무 큽니다.');
    if(!current())throw Error('Google 연결이 변경되었습니다.');
    return new Response(text,{status:response.status,headers:response.headers});
+   },25000,{signal:options.signal});
   }catch(e){
    if(!['TypeError','TimeoutError','AbortError'].includes(e.name)||!auth.request||!current())throw e;
    channel.proxyOnly=true;return proxy(url,options,channel);

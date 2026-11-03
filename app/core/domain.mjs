@@ -49,7 +49,7 @@ function calendarFields(v,old) {
 }
 function completeEndedPeriods(entries, now = new Date()) {
   for(const e of entries) if(e.endDate&&!e.deletedAt&&!['done','answered','canceled','moved'].includes(e.status)&&!(!e.seriesId&&isRecurring(e))&&e.endDate<dateInZone(now,e.timeZone||'Asia/Seoul')) {
-    e.status=e.kind==='question'?'answered':'done';e.doneAt=new Date(now).toISOString();e.updatedAt=e.doneAt;
+    e.status=e.kind==='question'?'answered':'done';e.doneAt=new Date(now).toISOString();e.updatedAt=e.doneAt;e.contentEdit={source:'automatic',at:e.doneAt};
   }
   return entries;
 }
@@ -63,7 +63,7 @@ function expandRecurrences(entries, through) {
     const duration=src.endDate?Math.round((Date.parse(src.endDate+'T12:00:00Z')-Date.parse(src.date+'T12:00:00Z'))/86400000):null;
     for(const date of recurrenceDates(src,through)) {
       const id=src.id+':'+date;if(date===src.date||ids.has(id))continue;
-      result.push({...clone(src),id,date,endDate:duration===null?null:shiftDate(date,duration),status:entryStatuses[src.kind][0],doneAt:null,recurrence:'none',recurrenceRule:null,recurrenceLines:[],seriesId:src.id,seriesEdited:false,google:undefined,movedTo:null,destinationId:null,sourceId:null,createdAt:now,updatedAt:now});ids.add(id);
+      result.push({...clone(src),id,date,endDate:duration===null?null:shiftDate(date,duration),status:entryStatuses[src.kind][0],doneAt:null,recurrence:'none',recurrenceRule:null,recurrenceLines:[],seriesId:src.id,seriesEdited:false,google:undefined,movedTo:null,destinationId:null,sourceId:null,createdAt:now,updatedAt:now,contentEdit:{source:'automatic',at:now}});ids.add(id);
     }
   }
   return result;
@@ -713,6 +713,10 @@ function apply(s, a) {
       throw Error("지원하지 않는 작업입니다.");
   }
   s.updatedAt = now;
+  // Only domain actions are user edits. Observation/import code stamps its own
+  // provenance, and automatic recurrence/period work must retain that source.
+  if (a.type !== 'materialize') for (const e of s.entries)
+    if (e.updatedAt === now) e.contentEdit = {source:'user',at:now};
   validate(s);
   return s;
 }
