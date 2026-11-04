@@ -18,7 +18,7 @@ import { NativeBridge } from './native-bridge.mjs';
 import { AppNotifications } from './notifications.mjs';
 import { googlePanel } from './google-ui.mjs';
 import {permissionState} from './google-permissions.mjs';
-import {AutomaticSync} from './auto-sync.mjs';
+import {AutomaticSync,runIndependentSync,bindSyncLifecycle} from './auto-sync.mjs';
 import {syncLabel} from './sync-status.mjs';
 import {renderDriveConflicts,renderDriveRecoveries} from './conflict-ui.mjs';
 import { expandEntries } from './core/calendar-recurrence.mjs';
@@ -834,9 +834,11 @@ async function performAutoSync(reason='foreground') {
       // Reserve imminent reminders independently of slow Drive/Calendar RPCs.
       // The notification queue guards account changes and native handover itself.
       refreshNotifications();
-      if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
-      if(sync&&!sync.stopped&&(reason!=='idle'||Date.now()-lastDriveAttempt>=60000)){lastDriveAttempt=Date.now();try{await runSync(false, true);}catch{}}
-      if(!modal.open)try{await calendar?.run({reason});}catch{}
+      await runIndependentSync(async()=>{
+       if(permissionState(session).drive&&(!sync||sync.stopped))await attachDrive(session,session.account,generation);
+       if(session!==auth||generation!==connectionGeneration)return;
+       if(sync&&!sync.stopped&&(!['idle','background'].includes(reason)||Date.now()-lastDriveAttempt>=60000||reason==='background'&&sync.status().pending)){lastDriveAttempt=Date.now();await runSync(false,true);}
+      },()=>{if(session===auth&&generation===connectionGeneration&&!modal.open)return calendar?.run({reason});});
       // Remote completions/edits may cancel or change a reminder during that run.
       refreshNotifications();
       renderSyncStatus();
@@ -1462,7 +1464,7 @@ async function handle(a) {
     case "help":
       return modalOpen(
         "H.PLAN 사용 안내",
-        `<div class="stack manual-guide"><h3>3.4.0 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive는 실제 수정 순서가 확인되면 최근 내용을 자동 반영합니다. 설정 → Google 연동 · Drive → 연결 관리 → 자동 반영 이전 내용에서 이전 기록을 복원할 수 있습니다. 삭제나 수정 순서가 불확실한 경우만 내용을 확인합니다. Calendar 수정 충돌은 별도로 확인합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
+        `<div class="stack manual-guide"><h3>3.4.0 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive는 최근 수정 내용을 자동 반영하며 예전 연동 기록은 저장 이력도 비교합니다. 같은 내용은 선택 없이 합칩니다. 설정 → Google 연동 · Drive → 연결 관리 → 자동 반영 이전 내용에서 이전 기록을 복원할 수 있습니다. 삭제 충돌·서로 다른 일정 연결·동시각의 다른 내용처럼 자동 판단이 어려운 경우만 내용을 확인합니다. Calendar 수정 충돌은 별도로 확인합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
       );
     case "report": {
       const { reportDialog } = await import("./reports-ui.mjs");
@@ -1632,17 +1634,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   installPrompt = e;
 });
-document.addEventListener("visibilitychange", async () => {
-  if (!document.hidden && repo) {
-    await repo.reload();
-    if (!modal.open) autoSync();
-  } else if (document.hidden && sync?.status().pending && !modal.open) {
-    runSync(false, true).catch(() => {});
-  }
-});
-window.addEventListener("pageshow", () => {
-  if (repo && !modal.open) autoSync();
-});
+bindSyncLifecycle({foreground:async()=>{if(repo){await repo.reload();if(!modal.open)return autoSync();}},background:()=>{if(repo&&!modal.open)return autoSync('background');}});
 setInterval(() => {
   if (!document.hidden && !modal.open) autoSync('idle');
 }, 60000);
@@ -1650,7 +1642,7 @@ try {
   repo = await Repository.open(await IndexedStore.open());
   calendar=new CalendarIntegration({repo,getAuth:()=>auth,isEditing:()=>modal.open,onStatus:()=>{renderSyncStatus();if(route==='settings'&&!modal.open)settings();}});
   notifications=new AppNotifications({getState:state,getAuth:()=>auth,getNative:()=>nativeBridge,onError:e=>toast(e.message)});
-  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:(id,entryId,startAt)=>notifications.acknowledge(id,startAt),onReady:()=>{notifications.uploaded=null;refreshNotifications(true);if(route==='settings')settings();}});
+  nativeBridge=new NativeBridge({onState:()=>{if(route==='settings'&&!modal.open)settings();},getState:state,getCacheKey:()=>repo.record.activeAccount||'local',onAck:(id,entryId,startAt)=>notifications.acknowledge(id,startAt),onRefresh:async()=>{if(!modal.open)await autoSync('background');nativeBridge?.update();},onReady:()=>{notifications.uploaded=null;refreshNotifications(true);if(route==='settings')settings();}});
   const launch=new URLSearchParams(location.search);
   if(dateOK(launch.get('date')))date=launch.get('date');
   navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='hplan.notification.ack')notifications.acknowledge(e.data.entryId,e.data.startAt,e.data.sessionId).catch(()=>{});});

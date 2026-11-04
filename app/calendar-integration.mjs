@@ -13,7 +13,7 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
   if(!Number.isInteger(result.googleStatus))throw Error('Google 연결 응답을 확인하지 못했습니다.');
   return new Response(result.googleStatus===204?null:JSON.stringify(result.data),{status:result.googleStatus,headers:{'Content-Type':'application/json'}});
  };
- return async(url,options={})=>{
+ const managedTransport=async(url,options={})=>{
   // Calendar and Tasks use separate Google hosts. Failure on one must not
   // suppress the other's healthy direct route during this shared sync run.
   const host=new URL(url).origin;
@@ -40,6 +40,8 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
    channel.proxyOnly=true;return proxy(url,options,channel);
   }
  };
+ managedTransport.managesRequestDeadline=true;
+ return managedTransport;
 }
 export class CalendarIntegration {
  constructor({repo,getAuth,isEditing,onStatus=()=>{},createClient=options=>new CalendarClient(options)}){Object.assign(this,{repo,getAuth,isEditing,onStatus,createClient});this.now=Date.now;this.attempts=new Map();this.taskSignatures=new Map();this.calendarSignatures=new Map();this.state={busy:false,error:null,lastSyncAt:null,services:{},account:null};}
@@ -65,7 +67,11 @@ export class CalendarIntegration {
   const account=this.repo.record.activeAccount,auth=this.getAuth(),allowed=()=>account===this.repo.record.activeAccount&&auth===this.getAuth()&&!this.isEditing();
   const options=this.options(),permissions=permissionState(auth),active={calendar:options.enabled&&permissions.calendar,tasks:options.tasks&&permissions.tasks};
   const elapsed=feature=>this.now()-(this.attempts.get(account+':'+feature)||0);
-  if(reason==='idle'){active.calendar&&=elapsed('calendar')>=5*60000;active.tasks&&=elapsed('tasks')>=15*60000;}
+  if(reason==='idle'||reason==='background'){
+   const saved=this.status.services;
+   active.calendar&&=reason==='background'&&this.calendarSignatures.get(account)!==this.calendarSignature(account)||elapsed('calendar')>=(saved.calendar?.error?60000:5*60000);
+   active.tasks&&=reason==='background'&&this.taskSignatures.get(account)!==this.taskSignature(account)||elapsed('tasks')>=(saved.tasks?.error?60000:15*60000);
+  }
   if(reason==='local'){active.tasks&&=this.taskSignatures.get(account)!==this.taskSignature(account);active.calendar&&=this.calendarSignatures.get(account)!==this.calendarSignature(account);}
   if(!active.calendar&&!active.tasks){this.onStatus();return;}
   const observed={calendar:this.calendarSignature(account),tasks:this.taskSignature(account)};

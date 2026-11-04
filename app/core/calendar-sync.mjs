@@ -314,7 +314,7 @@ class CalendarSync {
       target.google={...target.google,calendarColor:this.ledger.colors?.[link.calendarId]||target.google.calendarColor||null,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:pending,deleted:false};
       // API caches and ETags must persist, without looking like a content edit
       // on every device that independently observes the same Google resource.
-      if(!same({...e,google:null,updatedAt:null},{...target,google:null,updatedAt:null}))target.updatedAt=at;
+      if(!same({...e,google:null,updatedAt:null},{...target,google:null,updatedAt:null})){const remoteTime=Date.parse(resource.updated);const actual=Object.keys(patch).length||!Number.isFinite(remoteTime)?at:new Date(remoteTime).toISOString();target.updatedAt=actual;target.contentEdit={source:"google",at:actual};}
     });
     const latest=(await this.getState()).entries.find(x=>x.id===id);if(latest)this.ledger.links[id]={...clone(latest.google),origin:latest.origin};
     return synced;
@@ -337,7 +337,7 @@ class CalendarSync {
     return this.change(s=>{const e=s.entries.find(x=>x.id===entryId);if(e?.google?.accountId!==this.accountId)throw Error('현재 연결된 Google 계정의 충돌만 해결할 수 있습니다.');
       const conflict=Object.hasOwn(e.google.conflicts||{},field)?e.google.conflicts[field]:null;if(!conflict)throw Error('해결할 Google 충돌을 찾을 수 없습니다.');
       const local=localProjection(e,s.projects);if(!Object.hasOwn(local,field))throw Error('지원하지 않는 Google 충돌 항목입니다.');
-      writeProjection(e,{[field]:choice==='local'?local[field]:conflict.google},s.projects);e.google.base[field]=conflict.google;delete e.google.conflicts[field];e.updatedAt=new Date(this.now()).toISOString();},'google-calendar-resolve');
+      writeProjection(e,{[field]:choice==='local'?local[field]:conflict.google},s.projects);e.google.base[field]=conflict.google;delete e.google.conflicts[field];e.updatedAt=new Date(this.now()).toISOString();e.contentEdit={source:'user',at:e.updatedAt};},'google-calendar-resolve');
   }
 }
 export {CalendarSync,entryToEvent,eventToEntry,taskToEntry,stableEventId,stableRemoteId,mergeFields};

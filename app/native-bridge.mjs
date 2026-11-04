@@ -12,7 +12,8 @@ export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
  return {generatedAt:now,theme:state.settings.theme||'light',cacheKey,rangeStart:start,rangeEnd:end,truncated:expanded.length>5000,events};
 }
 export class NativeBridge {
- constructor({getState,getCacheKey,onAck,onReady,onState}={}) {
+ constructor({getState,getCacheKey,onAck,onReady,onState,onRefresh}={}) {
+  this.onRefresh=onRefresh;
   Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=rememberedNativeIntent();if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
   this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);window.hplanNativeBridgeActive=true;
   const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);
@@ -35,6 +36,7 @@ export class NativeBridge {
    let m=e.data;try{if(typeof m==='string')m=JSON.parse(m);}catch{return;}
    if(!this.nonce){acceptReady(m);return;}
    if(m?.nonce!==this.nonce||m.version!==1)return;
+   if(m.type==='hplan.native.refresh'&&m.reason==='background'){try{await this.onRefresh?.();}catch{}return;}
    if(m.type==='hplan.native.snapshot.rejected'){clearTimeout(this.ackTimer);this.status='위젯 저장본 형식 확인 필요';this.onState?.();return;}
    if(m.type==='hplan.native.snapshot.accepted'){
     if(this.pendingSnapshot&&m.generatedAt!==this.pendingSnapshot.generatedAt)return;

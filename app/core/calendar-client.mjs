@@ -1,5 +1,6 @@
 // Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 const CALENDAR_API='https://www.googleapis.com/calendar/v3';
+import {requestDeadline} from "./request-deadline.mjs";
 const TASKS_API='https://tasks.googleapis.com/tasks/v1';
 const GOOGLE_CALENDAR_SCOPES=['https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar.calendarlist.readonly','https://www.googleapis.com/auth/tasks'];
 const enc=value=>encodeURIComponent(String(value));
@@ -8,20 +9,27 @@ class CalendarApiError extends Error {
 }
 class CalendarClient {
   constructor({accessToken,fetch=globalThis.fetch}={}) {
-    this.accessToken=accessToken;this.fetch=fetch.bind(globalThis);
+    this.accessToken=accessToken;this.fetch=fetch.bind(globalThis);this.managesRequestDeadline=fetch.managesRequestDeadline===true;
   }
   async request(url,{method='GET',body,etag}={},refreshed=false) {
     if(![CALENDAR_API,TASKS_API].some(base=>url.startsWith(base+'/')))throw Error('허용되지 않은 Google API 주소입니다.');
+    const work=async signal=>{
     const token=typeof this.accessToken==='function'?await this.accessToken(refreshed):this.accessToken;
+    signal.throwIfAborted();
     if(typeof token!=='string'||!token)throw Error('Google Calendar에 먼저 연결해 주세요.');
     const headers={Authorization:'Bearer '+token,Accept:'application/json'};
     if(body!==undefined)headers['Content-Type']='application/json';if(etag)headers['If-Match']=etag;
-    const response=await this.fetch(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),redirect:'error',cache:'no-store',signal:AbortSignal.timeout(30000)});
+    const response=await this.fetch(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),redirect:'error',cache:'no-store',signal});
+    signal.throwIfAborted();
     if(response.status===401&&!refreshed&&typeof this.accessToken==='function')return this.request(url,{method,body,etag},true);
     if(!response.ok)throw new CalendarApiError(response.status);
     if(response.status===204)return null;
     const text=await response.text();if(text.length>20*1024*1024)throw Error('Google 일정 응답이 너무 큽니다.');
     return text?JSON.parse(text):null;
+    };
+    // Browser adapters own separate direct/broker deadlines. An enclosing
+    // timeout would expire their bounded fallback together with the old read.
+    return this.managesRequestDeadline?work(new AbortController().signal):requestDeadline(work,30000);
   }
   async pages(url,params={}) {
     const items=[];let pageToken=null,nextSyncToken;

@@ -403,25 +403,17 @@ function mergeRecovery(a, b) {
 }
 function recoveries(graph) { check(graph); return clone(graph.recovery || []); }
 function editTime(version) {
-  const value = version.value;
-  if (!value || value.deletedAt) return NaN;
-  const edit = value.contentEdit;
-  // Legacy Google observations, generated instances and automatic completion
-  // did not distinguish observation time from user edits. Do not guess.
-  if (edit ? !['user','google'].includes(edit.source) :
-      value.google || value.origin === 'google' || value.seriesId && !value.seriesEdited ||
-      value.endDate && ['done','answered'].includes(value.status)) return NaN;
-  const at = Date.parse(edit?.at || value.updatedAt), created = Date.parse(value.createdAt);
-  return Number.isFinite(at) && at <= Date.parse(version.at) && (!Number.isFinite(created) || at >= created) ? at : NaN;
+ const value=version.value;if(!value||value.deletedAt)return NaN;
+ const observed=Date.parse(version.at),edit=value.contentEdit;
+ if(edit?.source==='automatic')return NaN;
+ const at=Date.parse(edit?.at||value.updatedAt);
+ if(!Number.isFinite(at))return value.updatedAt?NaN:observed;
+ if(at>observed)return NaN;
+ return at;
 }
 function protectedLink(value) {
-  const google = clone(value.google || null);
-  if (google) {
-    delete google.etag; delete google.resource; delete google.calendarColor;
-    if (google.generation === 0) delete google.generation;
-    if (google.deleted === false) delete google.deleted;
-  }
-  return stable({google, origin:value.origin || 'hplan', calendarTarget:value.calendarTarget || null});
+ const g=value.google;
+ return stable(g?{service:g.service,id:g.id,accountId:g.accountId,calendarId:g.calendarId,taskListId:g.taskListId}:null);
 }
 function remember(graph, key, versions, selectedId) {
   const item = {id:randomUUID(),key,selectedId,at:new Date().toISOString(),versions:clone(versions)};
@@ -435,8 +427,8 @@ function reconcileLatest(graph) {
     const times = versions.map(editTime);
     if (times.some(time => !Number.isFinite(time))) continue;
     const latest = Math.max(...times), winners = versions.filter((v,i) => times[i] === latest);
-    if (new Set(winners.map(v => comparable(v.value,key))).size !== 1) continue;
-    const selected = winners[0];
+    if (new Set(winners.map(v => {const x=clone(v.value);delete x.google;return comparable(x,key);})).size !== 1) continue;
+    const selected = winners.toSorted((a,b)=>Date.parse(b.at)-Date.parse(a.at)||a.id.localeCompare(b.id))[0];
     remember(result,key,versions,selected.id);
     put(result,key,selected.value);
   }

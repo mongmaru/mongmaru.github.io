@@ -1,5 +1,6 @@
 // Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 const randomUUID = () => globalThis.crypto.randomUUID();
+import { requestDeadline } from "./request-deadline.mjs";
 const API = "https://www.googleapis.com/drive/v3";
 const MAX_BYTES = 32 * 1024 * 1024;
 const escapeQuery = (s) =>
@@ -27,18 +28,29 @@ class DriveClient {
     for (let attempt = 0; attempt < 4; attempt++) {
       let res;
       try {
-        const accessToken=await this.token(forceToken);forceToken=false;
-        res = await this.fetch(url, {
+        res = await requestDeadline(async signal=>{
+        const accessToken=await this.token(forceToken);forceToken=false;signal.throwIfAborted();
+        const response = await this.fetch(url, {
           ...options,
           headers: {
             ...options.headers,
             Authorization: `Bearer ${accessToken}`,
           },
-          signal: AbortSignal.timeout(45000),
+          signal,
           redirect: options.redirect || "error",
         });
+        signal.throwIfAborted();
+        // Finish the bounded body before releasing the deadline. fetch itself
+        // resolves at headers and used to leave suspended bodies holding sync.
+        if(Number(response.headers.get('content-length'))>MAX_BYTES)throw Error('동기화 데이터가 너무 큽니다.');
+        if(!response.body)return response;
+        const reader=response.body.getReader(),chunks=[];let size=0;
+        while(true){const {value,done}=await reader.read();signal.throwIfAborted();if(done)break;size+=value.length;if(size>MAX_BYTES){await reader.cancel();throw Error('동기화 데이터가 너무 큽니다.');}chunks.push(value);}
+        const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+        return new Response(bytes,{status:response.status,statusText:response.statusText,headers:response.headers});
+        },45000,{signal:options.signal});
       } catch (e) {
-        if (e.message?.includes("연결") || e.message?.includes("로그인"))
+        if (e.message?.includes("연결") || e.message?.includes("로그인") || e.message?.includes("너무 큽"))
           throw e;
         throw Error(
           "Google Drive에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요. 변경 내용은 이 기기에 보관됩니다.",
@@ -52,7 +64,7 @@ class DriveClient {
           res.status >= 500 ||
           reason === "rateLimitExceeded" ||
           reason === "userRateLimitExceeded") &&
-        attempt < 2
+        attempt < 2 && ['GET','HEAD'].includes(options.method||'GET')
       ) {
         await this.sleep(500 * 2 ** attempt);
         continue;
