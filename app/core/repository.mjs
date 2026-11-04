@@ -265,8 +265,9 @@ export class Repository {
     this.notify();
     return this.state;
   }
-  dispatch(action, base = null) {
-    return this.update((r) => {
+  async dispatch(action, base = null, onApplied) {
+    let change;
+    const state = await this.update((r) => {
       if (base?.id && ["entry.save", "project.save"].includes(action.type)) {
         const current = r.state[
           action.type === "entry.save" ? "entries" : "projects"
@@ -302,9 +303,12 @@ export class Repository {
       if (!r.backups.some((x) => x.label === "auto" && x.at.startsWith(day)))
         addBackup(r, "auto");
       r.state = next;
+      if (onApplied) change = [prev.entries, next.entries];
       capture(r);
       return r;
     });
+    if (change) await onApplied(...change);
+    return state;
   }
   undo() {
     return this.update((r) => {

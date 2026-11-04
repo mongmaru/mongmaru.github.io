@@ -12,9 +12,9 @@ export function widgetSnapshot(state,{cacheKey='local',now=Date.now()}={}) {
  return {generatedAt:now,theme:state.settings.theme||'light',cacheKey,rangeStart:start,rangeEnd:end,truncated:expanded.length>5000,events};
 }
 export class NativeBridge {
- constructor({getState,getCacheKey,onAck,onReady,onState,onRefresh}={}) {
+ constructor({getState,getCacheKey,getCloudMode,onAck,onReady,onState,onRefresh,onCloudMode}={}) {
   this.onRefresh=onRefresh;
-  Object.assign(this,{getState,getCacheKey,onAck,onReady,onState});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=rememberedNativeIntent();if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
+  Object.assign(this,{getState,getCacheKey,getCloudMode,onAck,onReady,onState,onCloudMode});this.port=null;this.nonce=null;this.nativeNotificationsEnabled=false;this.expected=rememberedNativeIntent();if(this.expected){this.status='Android 연결 통로 대기 중';this.startupTimer=setTimeout(()=>{if(!this.nonce){this.status='Android 연결 통로를 받지 못했습니다 · APK 설정의 연결 단계를 확인해 주세요';this.onState?.();}},12000);}
   this.listener=e=>this.receive(e);window.addEventListener('message',this.listener);window.hplanNativeBridgeActive=true;
   const pending=window.hplanPendingNativeEvent;window.hplanPendingNativeEvent=null;if(pending)this.receive(pending);
  }
@@ -28,7 +28,7 @@ export class NativeBridge {
   const port=this.port;
   const acceptReady=m=>{
    if(m?.type!=='hplan.native.ready'||m.version!==1||typeof m.nonce!=='string'||m.nonce.length<16||m.nonce.length>200||this.nonce&&m.nonce!==this.nonce)return false;
-   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.notificationPermission=m.notificationPermission;this.notificationStatus=m.notificationStatus||null;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
+   clearTimeout(this.startupTimer);clearTimeout(this.handshakeTimer);this.nonce=m.nonce;this.notificationPermission=m.notificationPermission;this.notificationStatus=m.notificationStatus||null;this.nativeNotificationsEnabled=m.nativeNotificationsEnabled===true&&m.notificationPermission==='granted';this.cloudPush=m.capabilities?.cloudPush===true;this.cloudPushPermission=m.cloudPushPermission;if(m.capabilities?.webReadyAck===true)this.send({type:'hplan.web.ready'});this.onReady?.(this);this.update();return true;
   };
   this.handshakeTimer=setTimeout(()=>{if(port===this.port&&!this.nonce){port.close();this.port=null;this.status='Android 연결 응답 대기 시간 초과';this.onState?.();}},8000);
   port.onmessage=async e=>{
@@ -40,7 +40,10 @@ export class NativeBridge {
    if(m.type==='hplan.native.snapshot.rejected'){clearTimeout(this.ackTimer);this.status='위젯 저장본 형식 확인 필요';this.onState?.();return;}
    if(m.type==='hplan.native.snapshot.accepted'){
     if(this.pendingSnapshot&&m.generatedAt!==this.pendingSnapshot.generatedAt)return;
-    clearTimeout(this.ackTimer);this.notificationStatus=m.notificationStatus||this.notificationStatus;this.lastAccepted=m.generatedAt;this.pendingSnapshot=null;this.status='위젯 반영 완료';this.onState?.();return;
+    const wasCloud=this.notificationStatus?.mode==='cloud';
+    clearTimeout(this.ackTimer);this.notificationStatus=m.notificationStatus||this.notificationStatus;this.lastAccepted=m.generatedAt;this.pendingSnapshot=null;this.status='위젯 반영 완료';
+    if(wasCloud!== (this.notificationStatus?.mode==='cloud'))this.onCloudMode?.();
+    this.onState?.();return;
    }
    if(m.type==='hplan.native.ready'){acceptReady(m);return;}
    if(m.type==='hplan.native.ack'&&typeof m.occurrenceId==='string'){
@@ -82,12 +85,14 @@ export class NativeBridge {
   if(!this.port||!this.nonce)return;clearTimeout(this.timer);
   this.timer=setTimeout(()=>{
    try {
-    const state=this.getState(),cacheKey=this.getCacheKey?.()||'local',now=new Date();
+    const state=this.getState(),cacheKey=this.getCacheKey?.()||'local',now=new Date(),cloudMode=this.getCloudMode?.();
     // Storage revisions, cursor saves and sync timestamps do not change these
     // inputs. Do not re-expand recurring schedules for every metadata commit.
-    const input=JSON.stringify([cacheKey,state.settings.theme,state.entries,state.projects,now.getFullYear(),now.getMonth(),now.getDate()]);
+    const input=JSON.stringify([cacheKey,cloudMode,state.settings.theme,state.entries,state.projects,now.getFullYear(),now.getMonth(),now.getDate()]);
     if(input===this.lastInput)return;
-    this.deliver(widgetSnapshot(state,{cacheKey}));this.lastInput=input;
+    const snapshot=widgetSnapshot(state,{cacheKey});
+    if(cacheKey!=='local'&&typeof cloudMode==='boolean')snapshot.cloudNotifications=cloudMode;
+    this.deliver(snapshot);this.lastInput=input;
    }catch{this.status='위젯 전달을 확인하지 못했습니다 · 기존 저장본 유지';this.onState?.();}
   },250);
  }
