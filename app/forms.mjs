@@ -42,11 +42,14 @@ export function entryForm(state, date, entry = {}, preset = {}) {
   return `<div class="form-grid">${select("유형", "kind", Object.entries(kindLabels), e.kind)}${field("날짜", "date", e.date, "date", "required")}
  <div class="full">${area("내용", "text", e.text || "")}<p class="help">업무를 짧게 적고, 자세한 내용은 메모에 남기세요.</p></div>
  ${select("프로젝트", "projectId", projects, e.projectId || "")}${select("상태", "status", Object.entries(statusLabels), e.status)}
- ${field("마감일", "dueDate", e.dueDate || "", "date")}${field("재확인 날짜", "reviewDate", e.reviewDate || "", "date")}
+ <div class="full entry-date-color-grid">
+ ${field("마감일", "dueDate", e.dueDate || "", "date")}
+ <label class="field event-color-field">일정 색상<span class="event-color-control"><span class="event-color-swatch" aria-hidden="true" style="background:${entryColor(e,state.projects.find(p=>p.id===e.projectId))}"></span><select name="eventColorId" aria-label="일정 색상">${eventColors.map(([id,name])=>`<option value="${esc(id)}" ${id===(e.eventColorId===undefined?(e.google?.resource?.colorId||''):(e.eventColorId||''))?'selected':''}>${esc(name)}</option>`).join('')}</select></span></label>
+ ${field("재확인 날짜", "reviewDate", e.reviewDate || "", "date")}
+ <p class="full help">일정 앞의 색상 막대에 적용됩니다. Google Calendar와 같은 색상을 사용합니다.</p>
+ </div>
  ${timingForm(e)}
  ${select("상위 업무", "parentId", [["", "상위 업무 없음"], ...state.entries.filter((x) => !x.deletedAt && !x.parentId && x.id !== e.id && x.date === e.date && x.kind === e.kind && (x.projectId || null) === (e.projectId || null)).map((x) => [x.id, x.text.slice(0, 45)])], e.parentId || "")}
-
- <label class="field event-color-field">일정 색상<span class="event-color-control"><span class="event-color-swatch" aria-hidden="true" style="background:${entryColor(e,state.projects.find(p=>p.id===e.projectId))}"></span><select name="eventColorId" aria-label="일정 색상">${eventColors.map(([id,name])=>`<option value="${esc(id)}" ${id===(e.eventColorId===undefined?(e.google?.resource?.colorId||''):(e.eventColorId||''))?'selected':''}>${esc(name)}</option>`).join('')}</select></span></label><p class="help">일정 앞의 색상 막대에 적용됩니다. Google Calendar와 같은 색상을 사용합니다.</p>
  <div class="full row">${checkbox("중요 표시", "priority", e.priority)}</div>
  ${area("메모", "notes", e.notes || "", "full")}${field("확인 대상", "target", e.target || "")}
  <div class="full">${area("답변", "answer", e.answer || "")}</div></div>`;
@@ -80,6 +83,14 @@ export function adaptEntryForm(form, state) {
   const f = new FormData(form),
     kind = f.get("kind"),
     current = f.get("status");
+  const dueField = form.elements.namedItem("dueDate").closest("label");
+  const reviewField = form.elements.namedItem("reviewDate").closest("label");
+  const dateFields = dueField.parentElement;
+  const [firstDate, otherDate] = kind === "question" ? [reviewField, dueField] : [dueField, reviewField];
+  if (dateFields.firstElementChild !== firstDate) {
+    dateFields.prepend(firstDate);
+    dateFields.querySelector(".event-color-field").after(otherDate);
+  }
   const statuses =
     kind === "question"
       ? ["open", "waiting", "answered", "hold"]

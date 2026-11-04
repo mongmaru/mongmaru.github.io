@@ -170,18 +170,27 @@ class CalendarSync {
     await this.persist();
     if(this.calendarIds.length&&typeof this.client.listCalendars==='function') {
       try{const list=await this.client.listCalendars();this.ledger.timeZones={...(this.ledger.timeZones||{})};this.ledger.colors||={};for(const calendar of list.items)if(/^#[a-f0-9]{6}$/i.test(calendar.backgroundColor||"")){this.ledger.colors[calendar.id]=calendar.backgroundColor;if(calendar.primary)this.ledger.colors.primary=calendar.backgroundColor;}for(const calendar of list.items)if(calendar.timeZone){this.ledger.timeZones[calendar.id]=calendar.timeZone;if(calendar.primary)this.ledger.timeZones.primary=calendar.timeZone;}}
-      catch(error){this.error(error,'calendar-list');}
+      catch(error){this.error(error,'calendar-list',null,'calendar-list');}
     }
     for(const calendarId of this.calendarIds)await this.service('calendar',calendarId);
     if(this.tasks) {
-      try {const lists=await this.client.listTaskLists();for(const list of lists.items)await this.service('tasks',list.id);}catch(e){this.error(e,'tasks');}
+      try {const lists=await this.client.listTaskLists();for(const list of lists.items)await this.service('tasks',list.id);}catch(e){this.error(e,'tasks',null,'task-lists');}
     }
     this.result.lastAttemptAt=new Date(this.now()).toISOString();this.ledger.lastAttemptAt=this.result.lastAttemptAt;
     if(!this.result.errors.length){this.result.lastSyncAt=this.result.lastAttemptAt;this.ledger.lastSyncAt=this.result.lastSyncAt;}await this.persist();
     this.result.conflicts=(await this.getState()).entries.filter(e=>e.google?.accountId===this.accountId&&Object.keys(e.google.conflicts||{}).length).map(e=>({entryId:e.id,fields:clone(e.google.conflicts)}));
     return this.result;
   }
-  error(e,service,id){if(e.code==='CALENDAR_CANCELLED')throw e;this.result.errors.push({service,id:id||null,status:e.status||null,message:e.message||'Google 동기화에 실패했습니다.'});}
+  error(e,service,id,operation,phase='service'){
+    if(e.code==='CALENDAR_CANCELLED')throw e;
+    const status=Number.isInteger(e.status)&&e.status>=400&&e.status<=599?e.status:null;
+    const d=e.diagnostic||{},diagnostic={operation,status};
+    if(['broker-headers','broker-body','google-response'].includes(d.stage))diagnostic.stage=d.stage;
+    if(['timeout','network','http','rate-limit','scope','api-disabled','not-organizer'].includes(d.reason))diagnostic.reason=d.reason;
+    if(d.attempt===1||d.attempt===2)diagnostic.attempt=d.attempt;
+    if(Number.isFinite(d.elapsedMs)&&d.elapsedMs>=0)diagnostic.elapsedMs=Math.round(d.elapsedMs);
+    this.result.errors.push({service,id:id||null,status,message:e.message||'Google 동기화에 실패했습니다.',phase,operation,diagnostic});
+  }
   selected(link,service,container){return link.service===service&&(service==='calendar'?link.calendarId:link.taskListId)===container;}
   async remote(link){return link.service==='calendar'?this.client.getEvent(link.calendarId,link.id):this.client.getTask(link.taskListId,link.id);}
   async removeRemote(link){
@@ -197,9 +206,6 @@ class CalendarSync {
       const current=await this.getState();
       const sharedDeletes=current.calendarDeletions||{};
       for(const [id,tombstone]of Object.entries(sharedDeletes))if(tombstone.google?.accountId===this.accountId)this.ledger.links[id]={...tombstone.google,origin:tombstone.origin,deleted:true};
-      for(const [id,link]of Object.entries(this.ledger.links))if(this.selected(link,service,container)&&(!current.entries.some(e=>e.id===id)||link.pendingDelete)) {
-        await this.removeRemote(link);link.deleted=true;link.pendingDelete=false;await this.persist();
-      }
       let listing,cursor,cachedResources={};
       if(service==='calendar') {
         const checkpoint=this.ledger.calendars[container];cursor=checkpoint?.syncToken;
@@ -211,7 +217,16 @@ class CalendarSync {
       const resources=new Map(service==='calendar'&&cursor?Object.entries(cachedResources):[]);
       const listedIds=new Set(listing.items.map(resource=>resource.id));
       for(const resource of listing.items)resources.set(resource.id,resource);
-      if(service==='calendar')await this.linkOccurrences(container);
+      const currentEntries=new Map((await this.getState()).entries.map(entry=>[entry.id,entry]));
+      for(const [id,link]of Object.entries(this.ledger.links))if(this.selected(link,service,container)&&(!currentEntries.has(id)||link.pendingDelete&&currentEntries.get(id).deletedAt)) {
+        const observed=resources.get(link.id);
+        if(observed?.status!=='cancelled'&&!observed?.deleted){
+          try{await this.removeRemote(link);}catch(e){this.error(e,service,id,'delete','item');continue;}
+          resources.set(link.id,{id:link.id,status:'cancelled',deleted:true});
+        }
+        if(!link.deleted||link.pendingDelete){link.deleted=true;link.pendingDelete=false;await this.persist();}
+      }
+      const unresolved=service==='calendar'?await this.linkOccurrences(container):new Set();
       // Masters first, then moved/cancelled recurrence exceptions.
       for(const resource of [...listing.items].sort((a,b)=>Number(!!a.recurringEventId)-Number(!!b.recurringEventId))) {
         this.guard();
@@ -232,7 +247,7 @@ class CalendarSync {
         else {await this.change(s=>{s.entries.push(imported);});this.result.imported++;}
         this.ledger.links[imported.id]={...clone(imported.google),origin:imported.origin};
       }
-      const linked=(await this.getState()).entries.filter(e=>e.google?.accountId===this.accountId&&this.selected(e.google,service,container)&&(!e.seriesId||e.seriesEdited));
+      const linked=(await this.getState()).entries.filter(e=>!unresolved.has(e.id)&&e.google?.accountId===this.accountId&&this.selected(e.google,service,container)&&(!e.seriesId||e.seriesEdited));
       for(const entry of linked) {
         try {
           let resource=resources.get(entry.google.id);
@@ -243,12 +258,12 @@ class CalendarSync {
           if(!resource)try{resource=await this.remote(entry.google);}catch(e){if(e.status===404||e.status===410)resource={id:entry.google.id,status:'cancelled',deleted:true};else throw e;}
           const synced=await this.reconcile(entry.id,resource);
           if(service==='calendar')resources.set(entry.google.id,synced||resource);
-        }catch(e){this.error(e,service,entry.id);}
+        }catch(e){this.error(e,service,entry.id,'reconcile','item');}
       }
       if(service==='calendar') {
         // Calendar is the sole export destination for H.PLAN-created entries.
         const unlinked=(await this.getState()).entries.filter(e=>!e.deletedAt&&!e.google&&(!e.origin||e.origin==='hplan'||e.calendarTarget?.accountId===this.accountId)&&!e.seriesId&&(e.calendarTarget?.calendarId||this.calendarIds[0])===container);
-        for(const entry of unlinked)try{await this.insert(entry.id,container);}catch(e){this.error(e,service,entry.id);}
+        for(const entry of unlinked)try{await this.insert(entry.id,container);}catch(e){this.error(e,service,entry.id,'insert','item');}
         if(listing.nextSyncToken) {
           // Retain only observed resources belonging to linked records, keeping
           // historical items outside the import window out of the local cache.
@@ -257,7 +272,7 @@ class CalendarSync {
         }
       }
       await this.persist();
-    }catch(e){this.error(e,service,container);}
+    }catch(e){this.error(e,service,container,service==='calendar'?'calendar-events':'task-list');}
   }
   async cancelOccurrence(resource,calendarId) {
     await this.change(s=>{const master=s.entries.find(e=>e.google?.accountId===this.accountId&&e.google.calendarId===calendarId&&e.google.id===resource.recurringEventId);if(master){
@@ -266,22 +281,32 @@ class CalendarSync {
       if(s.entries.some(e=>e.seriesId===master.id&&(e.originalDate||e.date)===date&&e.calendarRestorePending))return;master.recurrenceExceptions=[...new Set([...(master.recurrenceExceptions||[]),date])];master.updatedAt=new Date(this.now()).toISOString();s.entries=s.entries.filter(e=>!(e.seriesId===master.id&&(e.originalDate||e.date)===date&&!e.seriesEdited));}});
   }
   async linkOccurrences(calendarId) {
-    for(const occurrence of (await this.getState()).entries.filter(e=>e.seriesId&&e.seriesEdited&&!e.deletedAt)) {
+    const unresolved=new Set();
+    for(const occurrence of (await this.getState()).entries.filter(e=>e.seriesId&&e.seriesEdited)) {
       const state=await this.getState(),master=state.entries.find(e=>e.id===occurrence.seriesId);
       if(master?.google?.service!=='calendar'||master.google.accountId!==this.accountId||master.google.calendarId!==calendarId)continue;
       if(occurrence.google?.id&&occurrence.google.id!==master.google.id)continue;
-      const date=occurrence.originalDate||occurrence.date,zone=master.timeZone||'Asia/Seoul';
-      const instances=await this.client.listInstances(calendarId,master.google.id,{timeMin:new Date(zonedEpoch(shiftDate(date,-1),'00:00',zone)).toISOString(),timeMax:new Date(zonedEpoch(shiftDate(date,2),'00:00',zone)).toISOString()});
-      const resource=instances.items.find(e=>(e.originalStartTime?.date||(e.originalStartTime?.dateTime?wallParts(e.originalStartTime.dateTime,zone).date:null))===date);
-      if(!resource)throw Error('Google 반복 회차를 찾지 못했습니다. 원본 반복 일정은 유지했습니다.');
-      if(resource.status==='cancelled')continue;
-      await this.change(s=>{const target=s.entries.find(e=>e.id===occurrence.id);if(target){target.google={service:'calendar',accountId:this.accountId,calendarId,id:resource.id,etag:resource.etag,base:occurrenceBase(master,{...target,originalDate:date},s.projects),resource:clone(resource),originalDate:date,conflicts:{}};delete target.calendarRestorePending;}});
+      // An occurrence carrying its master's legacy link must never patch or
+      // delete that master while its own instance is unresolved.
+      unresolved.add(occurrence.id);
+      if(occurrence.deletedAt)continue;
+      try{
+        this.guard();
+        const date=occurrence.originalDate||occurrence.date,zone=master.timeZone||'Asia/Seoul';
+        const instances=await this.client.listInstances(calendarId,master.google.id,{timeMin:new Date(zonedEpoch(shiftDate(date,-1),'00:00',zone)).toISOString(),timeMax:new Date(zonedEpoch(shiftDate(date,2),'00:00',zone)).toISOString()});
+        const resource=instances.items.find(e=>(e.originalStartTime?.date||(e.originalStartTime?.dateTime?wallParts(e.originalStartTime.dateTime,zone).date:null))===date);
+        if(!resource)throw Error('Google 반복 회차를 찾지 못했습니다. 원본 반복 일정은 유지했습니다.');
+        if(resource.status==='cancelled')continue;
+        await this.change(s=>{const target=s.entries.find(e=>e.id===occurrence.id);if(target){target.google={service:'calendar',accountId:this.accountId,calendarId,id:resource.id,etag:resource.etag,base:occurrenceBase(master,{...target,originalDate:date},s.projects),resource:clone(resource),originalDate:date,conflicts:{}};delete target.calendarRestorePending;}});
+        unresolved.delete(occurrence.id);
+      }catch(e){this.error(e,'calendar',occurrence.id,'link-occurrence','item');}
     }
+    return unresolved;
   }
   async reconcile(id,resource,retry=true) {
     this.guard();const state=await this.getState(),e=state.entries.find(x=>x.id===id);if(!e)return;
     const link=e.google,deleted=resource.status==='cancelled'||resource.deleted;
-    if(e.deletedAt){await this.removeRemote(link);await this.change(s=>{const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return {id:link.id,status:'cancelled',deleted:true};}
+    if(e.deletedAt){if(!deleted)await this.removeRemote(link);await this.change(s=>{const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return {id:link.id,status:'cancelled',deleted:true};}
     if(deleted) {
       if(e.origin==='hplan'&&link.deleted){await this.insert(id,link.calendarId,(link.generation||0)+1);return;}
       await this.change(s=>{apply(s,{type:'entry.delete',ids:[id],scope:!e.seriesId&&isRecurring(e)?'all':undefined,occurrenceDate:e.date});const x=s.entries.find(x=>x.id===id);if(x)x.google={...x.google,deleted:true,deletionAt:x.deletedAt};});this.ledger.links[id]={...link,origin:e.origin,deleted:true};this.result.deleted++;return;

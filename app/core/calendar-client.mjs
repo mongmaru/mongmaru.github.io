@@ -4,8 +4,35 @@ import {requestDeadline} from "./request-deadline.mjs";
 const TASKS_API='https://tasks.googleapis.com/tasks/v1';
 const GOOGLE_CALENDAR_SCOPES=['https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar.calendarlist.readonly','https://www.googleapis.com/auth/tasks'];
 const enc=value=>encodeURIComponent(String(value));
+const providerReasons=new Map([
+  ['rateLimitExceeded','rate-limit'],['userRateLimitExceeded','rate-limit'],['quotaExceeded','rate-limit'],
+  ['insufficientPermissions','scope'],['ACCESS_TOKEN_SCOPE_INSUFFICIENT','scope'],
+  ['accessNotConfigured','api-disabled'],['SERVICE_DISABLED','api-disabled'],
+  ['forbiddenForNonOrganizer','not-organizer'],
+]);
+const reasonMessages={
+  'rate-limit':'Google 요청 한도에 도달했습니다. 잠시 후 자동으로 다시 확인합니다.',
+  'scope':'Google 기능 권한을 다시 확인해 주세요.',
+  'api-disabled':'Google API 사용 설정을 확인해 주세요.',
+  'not-organizer':'일정 주최자만 변경할 수 있는 항목입니다.',
+};
+async function forbiddenReason(response,signal){
+  try{
+    // The provider already returned 403. An unavailable detail body must not
+    // hide that status or make the connection wait on another full timeout.
+    const text=await requestDeadline(()=>response.text(),1000,{signal});
+    const error=text.length<=65536?JSON.parse(text)?.error:null;
+    for(const list of [error?.errors,error?.details])if(Array.isArray(list)){
+      for(const detail of list){const reason=providerReasons.get(detail?.reason);if(reason)return reason;}
+    }
+  }catch{} // Keep the original HTTP status if details are unavailable.
+  return 'http';
+}
 class CalendarApiError extends Error {
-  constructor(status){super(status===401?'Google 연결을 다시 확인해 주세요.':status===403?'Calendar/할 일 접근 권한 또는 API 사용 설정을 확인해 주세요.':status===412?'Google에서 같은 항목이 변경됐습니다.':`Google 일정 요청에 실패했습니다. (${status})`);this.status=status;this.name='CalendarApiError';}
+  constructor(status,reason=status===429?'rate-limit':'http'){
+    super(reasonMessages[reason]||(status===401?'Google 연결을 다시 확인해 주세요.':status===403?'Calendar/할 일 접근 권한 또는 API 사용 설정을 확인해 주세요.':status===412?'Google에서 같은 항목이 변경됐습니다.':`Google 일정 요청에 실패했습니다. (${status})`));
+    this.status=status;this.name='CalendarApiError';this.diagnostic={stage:'google-response',reason};
+  }
 }
 class CalendarClient {
   constructor({accessToken,fetch=globalThis.fetch}={}) {
@@ -22,7 +49,7 @@ class CalendarClient {
     const response=await this.fetch(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),redirect:'error',cache:'no-store',signal});
     signal.throwIfAborted();
     if(response.status===401&&!refreshed&&typeof this.accessToken==='function')return this.request(url,{method,body,etag},true);
-    if(!response.ok)throw new CalendarApiError(response.status);
+    if(!response.ok)throw new CalendarApiError(response.status,response.status===403?await forbiddenReason(response,signal):undefined);
     if(response.status===204)return null;
     const text=await response.text();if(text.length>20*1024*1024)throw Error('Google 일정 응답이 너무 큽니다.');
     return text?JSON.parse(text):null;

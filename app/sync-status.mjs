@@ -8,6 +8,7 @@ export function syncLabel({connected=false,connecting=false,reauth=false,offline
  if(drive?.busy||list.some(s=>s.code==='syncing'))return '동기화 중';
  if(drive?.conflictCount||list.some(s=>s.conflicts>0))return '수정 내용 확인 필요';
  if(drive?.error||list.some(s=>s.code==='error'))return '일부 동기화 확인 필요';
+ if(list.some(s=>s.code==='partial'))return '일부 항목 동기화 대기';
  if(drive?.pending)return '동기화 대기';
  if(list.some(s=>s.code==='permission'&&s.enabled))return '추가 권한 필요';
  if(drive?.lastSync||list.some(s=>s.code==='connected'))return '동기화 완료';

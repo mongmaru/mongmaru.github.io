@@ -8,7 +8,8 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
  const secret=auth.credential?.secret,current=()=>stillCurrent()&&secret===auth.credential?.secret,channels=new Map();
  const proxy=async(url,options,channel)=>{
   if(!current())throw Error('Google 연결이 변경되었습니다.');
-  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){const d=failure.diagnostic;if(d)onDiagnostic({service:new URL(url).hostname==='tasks.googleapis.com'?'tasks':'calendar',stage:d.stage,reason:d.reason,attempt:d.attempt,elapsedMs:d.elapsedMs});if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))channel.blocked=failure;throw failure;}
+  if(channel.brokerFailure)throw channel.brokerFailure;
+  let result;try{result=await auth.request('/v1/google',auth.credential,{method:'POST',body:{url:String(url),method:options.method||'GET',...(options.body?{body:JSON.parse(options.body)}:{}),...(options.headers?.['If-Match']?{etag:options.headers['If-Match']}:{})}});}catch(failure){const d=failure.diagnostic;if(d)onDiagnostic({service:new URL(url).hostname==='tasks.googleapis.com'?'tasks':'calendar',stage:d.stage,reason:d.reason,attempt:d.attempt,elapsedMs:d.elapsedMs});if(failure.code==='TEMPORARY'&&(!failure.status||failure.status>=500||failure.status===408||failure.status===429))channel.brokerFailure=failure;throw failure;}
   if(!current())throw Error('Google 연결이 변경되었습니다.');
   if(!Number.isInteger(result.googleStatus))throw Error('Google 연결 응답을 확인하지 못했습니다.');
   return new Response(result.googleStatus===204?null:JSON.stringify(result.data),{status:result.googleStatus,headers:{'Content-Type':'application/json'}});
@@ -17,9 +18,9 @@ export function googleTransport(auth,stillCurrent=()=>true,transport=globalThis.
   // Calendar and Tasks use separate Google hosts. Failure on one must not
   // suppress the other's healthy direct route during this shared sync run.
   const host=new URL(url).origin;
-  if(!channels.has(host))channels.set(host,{blocked:null,proxyOnly:false});
+  if(!channels.has(host))channels.set(host,{brokerFailure:null,proxyOnly:false});
   const channel=channels.get(host);
-  if(channel.blocked)throw channel.blocked;if(!current())throw Error('Google 연결이 변경되었습니다.');
+  if(!current())throw Error('Google 연결이 변경되었습니다.');
   // A failed write response is ambiguous. Send mutations through the broker once.
   if(auth.request&&(channel.proxyOnly||(options.method||'GET')!=='GET'))return proxy(url,options,channel);
   try{
@@ -80,9 +81,14 @@ export class CalendarIntegration {
   this.state={...this.state,active,account,busy:true,error:null,services:options.serviceStatus||{}};this.onStatus();
   this.running=(async()=>{try{
     const result=await this.engine.run(),attempt=result.lastAttemptAt||new Date().toISOString(),services={...this.state.services};
-    for(const feature of ['calendar','tasks'])if(active[feature]){const errors=(result.errors||[]).filter(e=>feature==='calendar'?String(e.service).startsWith('calendar'):e.service==='tasks');services[feature]={...services[feature],lastAttempt:attempt,error:describeErrors(errors)||null,...(!errors.length?{lastSuccess:attempt}:{})};}
+    for(const feature of ['calendar','tasks'])if(active[feature]){
+      const errors=(result.errors||[]).filter(e=>feature==='calendar'?String(e.service).startsWith('calendar'):e.service==='tasks');
+      const partial=errors.length>0&&errors.every(e=>e.phase==='item');
+      const diagnostic=(errors.find(e=>e.phase!=='item')||errors[0])?.diagnostic||null;
+      services[feature]={...services[feature],lastAttempt:attempt,error:describeErrors(errors)||null,partial,diagnostic,...(!errors.length?{lastSuccess:attempt}:{})};
+    }
     if(allowed()){if(active.calendar&&!result.errors?.some(e=>String(e.service).startsWith('calendar')))this.calendarSignatures.set(account,observed.calendar);if(active.tasks&&!result.errors?.some(e=>e.service==='tasks'))this.taskSignatures.set(account,observed.tasks);this.state={...this.state,...result,services,error:result.errors?.length?describeErrors(result.errors):null};await this.configure({serviceStatus:services});}return result;
-   }catch(e){if(allowed()){this.state.error=e.message;for(const feature of ['calendar','tasks'])if(active[feature])this.state.services[feature]={...this.state.services[feature],error:e.message,lastAttempt:new Date().toISOString()};}throw e;}finally{this.state.busy=false;this.running=null;this.onStatus();}})();
+   }catch(e){if(allowed()){this.state.error=e.message;for(const feature of ['calendar','tasks'])if(active[feature])this.state.services[feature]={...this.state.services[feature],error:e.message,partial:false,diagnostic:null,lastAttempt:new Date().toISOString()};}throw e;}finally{this.state.busy=false;this.running=null;this.onStatus();}})();
   return this.running;
  }
  async resolve(id,field,choice){if(!this.engine)await this.run();if(!this.engine)throw Error('Calendar를 먼저 동기화해 주세요.');const account=this.repo.record.activeAccount,feature=this.repo.state.entries.find(e=>e.id===id)?.google?.service;const result=await this.engine.resolve(id,field,choice);if(feature==='tasks')this.taskSignatures.delete(account);else this.calendarSignatures.delete(account);return result;}
