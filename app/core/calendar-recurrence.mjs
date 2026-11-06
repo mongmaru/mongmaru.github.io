@@ -6,6 +6,19 @@ const weekdays = ['SU','MO','TU','WE','TH','FR','SA'];
 const dateValue = v => new Date(v + 'T12:00:00Z');
 const isoDate = v => v.toISOString().slice(0,10);
 const shiftDate = (date, days) => isoDate(new Date(dateValue(date).getTime() + days * DAY));
+const validDisplayDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(dateValue(value).getTime())&&isoDate(dateValue(value))===value;
+// A deadline extends the visible range only; it is never an automatic-completion end.
+function displayEndDate(entry) {
+  for(const value of [entry.endDate,entry.dueDate])if(validDisplayDate(value)&&value>=entry.date)return value;
+  return entry.date;
+}
+// Old materialized scaffolds inherited the master's absolute deadline. Normalize
+// only this transient view, retaining edited occurrences and the stored record.
+function displayOccurrence(entry,master) {
+  if(!entry.seriesEdited&&validDisplayDate(master?.dueDate)&&master.dueDate>=master.date&&entry.dueDate===master.dueDate&&entry.date!==master.date)
+    return {...entry,dueDate:shiftDate(entry.date,Math.round((dateValue(master.dueDate)-dateValue(master.date))/DAY))};
+  return entry;
+}
 function recurrenceDateValues(lines,prefix,timeZone='Asia/Seoul') {
   return lines.filter(x=>x.startsWith(prefix+':')||x.startsWith(prefix+';')).flatMap(line=>{
     const zone=/;TZID=([^;:]+)/.exec(line)?.[1]||timeZone;
@@ -146,10 +159,12 @@ function expandEntries(entries, from, to) {
   for(const e of entries) {
     if(e.seriesId)continue;
     if(isRecurring(e)) {
-      const days=e.endDate?Math.round((dateValue(e.endDate)-dateValue(e.date))/DAY):0;
+      const days=Math.round((dateValue(displayEndDate(e))-dateValue(e.date))/DAY);
+      const endDays=validDisplayDate(e.endDate)&&e.endDate>=e.date?Math.round((dateValue(e.endDate)-dateValue(e.date))/DAY):null;
+      const dueDays=validDisplayDate(e.dueDate)&&e.dueDate>=e.date?Math.round((dateValue(e.dueDate)-dateValue(e.date))/DAY):null;
       for(const date of recurrenceDates(e,to,shiftDate(from,-days))) {
         const replacement=overrides.get(e.id+':'+date);
-        out.push(replacement||{...e,id:date===e.date?e.id:e.id+':'+date,date,endDate:e.endDate?shiftDate(date,days):null,seriesId:e.id,recurrence:'none',recurrenceRule:null});
+        out.push(replacement?displayOccurrence(replacement,e):{...e,id:date===e.date?e.id:e.id+':'+date,date,endDate:endDays===null?null:shiftDate(date,endDays),dueDate:dueDays===null?e.dueDate:shiftDate(date,dueDays),seriesId:e.id,recurrence:'none',recurrenceRule:null});
       }
     } else out.push(e);
   }
@@ -157,6 +172,6 @@ function expandEntries(entries, from, to) {
   // materialized scaffold. Never re-add that stale scaffold after replacing it.
   // Distinct edited records remain visible so this view cannot discard user text.
   for(const e of entries)if(e.seriesId&&(overrides.get(occurrenceKey(e))===e||e.seriesEdited)&&!out.some(x=>x.id===e.id))out.push(e);
-  return out.filter(e=>!e.deletedAt&&e.date<=to&&(e.endDate||e.date)>=from).sort((a,b)=>a.date.localeCompare(b.date)||String(a.startTime||'').localeCompare(String(b.startTime||''))||a.id.localeCompare(b.id));
+  return out.filter(e=>!e.deletedAt&&e.date<=to&&displayEndDate(e)>=from).sort((a,b)=>a.date.localeCompare(b.date)||String(a.startTime||'').localeCompare(String(b.startTime||''))||a.id.localeCompare(b.id));
 }
-export {parseRule,recurrenceDates,shiftDate,dateInZone,zonedEpoch,expandEntries,recurrenceDateValues,isRecurring};
+export {parseRule,recurrenceDates,shiftDate,dateInZone,zonedEpoch,expandEntries,recurrenceDateValues,isRecurring,displayEndDate,displayOccurrence};

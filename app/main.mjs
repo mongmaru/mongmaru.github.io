@@ -1,3 +1,4 @@
+import './memo-tooltip.mjs';
 import {conflictLabel,conflictValue} from './conflict-value.mjs';
 import {entryColor} from './event-colors.mjs';
 import {adaptTiming as adaptTimingOnly} from './calendar-form.mjs';
@@ -21,7 +22,7 @@ import {permissionState} from './google-permissions.mjs';
 import {AutomaticSync,runIndependentSync,bindSyncLifecycle} from './auto-sync.mjs';
 import {syncLabel} from './sync-status.mjs';
 import {renderDriveConflicts,renderDriveRecoveries} from './conflict-ui.mjs';
-import { expandEntries } from './core/calendar-recurrence.mjs';
+import { expandEntries, displayEndDate } from './core/calendar-recurrence.mjs';
 import {
   GOOGLE_WEB_CLIENT_ID,
   APP_VERSION,
@@ -274,7 +275,7 @@ function entryCard(e, { showDate = false } = {}) {
     complete = ["done", "answered"].includes(e.status),
     sub = e.parentId;
   return `<article style="--event-color:${esc(entryColor(e,p))}" class="entry ${done(e) ? "done" : ""} ${sub ? "child" : ""} ${e.status === "moved" ? "moved" : ""}" data-entry="${esc(e.id)}"><button class="entry-check ${complete ? "checked" : ""}" aria-label="${complete ? "완료 취소" : "완료로 표시"}" data-action="toggle:${esc(e.id)}">${icon(complete ? "check" : "circle")}</button>
- <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" aria-label="${esc(e.text)} 수정"><div class="entry-title" >${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.allDay===false?`<span>${esc(e.startTime)}–${esc(e.endTime)}</span>`:""}${e.endDate?`<span>기간 ${esc(e.date.slice(5))}–${esc(e.endDate.slice(5))}</span>`:""}${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrenceRule || e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
+ <div class="entry-content" role="button" tabindex="0" data-action="edit:${esc(e.id)}" ${String(e.notes||'').trim()?`data-memo="${esc(e.notes)}"`:""} aria-label="${esc(e.text)} 수정"><div class="entry-title" >${e.priority ? '<span class="priority">★ </span>' : ""}${esc(e.text)}</div><div class="entry-meta">${showDate ? `<span>${esc(e.date)}</span>` : ""}<span class="tag">${esc(p?.name || kindLabels[e.kind])}</span><span>${esc(statusLabels[e.status])}</span>${e.allDay===false?`<span>${esc(e.startTime)}–${esc(e.endTime)}</span>`:""}${e.endDate?`<span>기간 ${esc(e.date.slice(5))}–${esc(e.endDate.slice(5))}</span>`:""}${e.dueDate ? `<span ${e.dueDate < today() && !done(e) ? 'class="priority"' : ""}>마감 ${esc(e.dueDate.slice(5))}</span>` : ""}${e.recurrenceRule || e.recurrence !== "none" || e.seriesId ? "<span>반복</span>" : ""}${e.movedTo ? `<span>→ ${esc(e.movedTo.slice(5))}</span>` : ""}${e.notes ? "<span>메모</span>" : ""}${selected.has(e.id) ? '<span class="priority">선택됨</span>' : ""}</div></div><button class="icon-button entry-menu" aria-label="${esc(e.text.slice(0, 35))} 더보기" data-action="menu:${esc(e.id)}">${icon("more")}</button></article>`;
 }
 function ordered(entries) {
   const result = [];
@@ -326,7 +327,7 @@ function planner() {
       count = calendarMode === "week" ? 7 : 42;
     const counts = new Map(),dayEntries=new Map();
     for (const e of expandEntries(activeEntries(),start,shiftDay(start,count-1)))
-      for(let day=e.date>start?e.date:start;day<=(e.endDate||e.date)&&day<=shiftDay(start,count-1);day=shiftDay(day,1)){counts.set(day,(counts.get(day)||0)+1);if(!dayEntries.has(day))dayEntries.set(day,[]);dayEntries.get(day).push(e);}
+      for(let day=e.date>start?e.date:start;day<=displayEndDate(e)&&day<=shiftDay(start,count-1);day=shiftDay(day,1)){counts.set(day,(counts.get(day)||0)+1);if(!dayEntries.has(day))dayEntries.set(day,[]);dayEntries.get(day).push(e);}
     calendar = `<div class="calendar" ${state().settings.hideWeekends ? 'style="grid-template-columns:repeat(5,minmax(0,1fr))"' : ""}>${[
       "일",
       "월",
@@ -347,12 +348,12 @@ function planner() {
         [0, 6].includes(new Date(day + "T12:00:00Z").getUTCDay())
       )
         return "";
-      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="mobile-day-items">${(dayEntries.get(day)||[]).slice(0,4).map(e=>`<span class="mobile-day-item" style="border-inline-start-color:${esc(entryColor(e,getProject(e.projectId)))}" title="${esc(e.text)}">${esc(e.text)}</span>`).join("")}${n>4?`<small>+${n-4}개 더 보기</small>`:""}</span></button>`;
+      return `<button class="calendar-day ${day.slice(0, 7) !== date.slice(0, 7) ? "off" : ""} ${day === date ? "selected" : ""} ${day === today() ? "today" : ""}" data-action="date:${day}" aria-label="${day} 일정 ${n}개" ${day === date ? 'aria-pressed="true"' : ""}><span>${num}</span><span class="mobile-day-items">${(dayEntries.get(day)||[]).slice(0,4).map(e=>`<span class="mobile-day-item" style="border-inline-start-color:${esc(entryColor(e,getProject(e.projectId)))}" ${String(e.notes||'').trim()?`data-memo="${esc(e.notes)}"`:`title="${esc(e.text)}"`}>${esc(e.text)}</span>`).join("")}${n>4?`<small>+${n-4}개 더 보기</small>`:""}</span></button>`;
     }).join("")}</div>`;
   }
   const entries = expandEntries(activeEntries(),date,date).filter(
     (e) =>
-      e.date <= date && (e.endDate || e.date) >= date &&
+      e.date <= date && displayEndDate(e) >= date &&
       viewLayout.shows(e.kind) &&
       (kind === "all" || e.kind === kind) &&
       (!projectFilter || e.projectId === projectFilter) &&
@@ -1493,7 +1494,7 @@ async function handle(a) {
     case "help":
       return modalOpen(
         "H.PLAN 사용 안내",
-        `<div class="stack manual-guide"><h3>5.0.0 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>PC에서 휴대폰 알림 보내기</h3><p>휴대폰의 설정 → 알림과 Android 위젯에서 PC 연동 알림을 켜고 PC 연결 코드를 만듭니다. PC의 설정 → 알림 → 휴대폰 알림 예약에 코드를 입력하면 연결됩니다. 같은 기기에서는 처음 한 번만 연결하며, 기기 변경·연결 해제 시 다시 연결합니다. PC를 끄기 전에 예약 확인됨 상태를 확인해 주세요. 종일 일정의 알림 기준은 오전 9시이며, 편집 화면에서는 알림을 미리 확인 처리하지 않습니다.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive는 최근 수정 내용을 자동 반영하며 예전 연동 기록은 저장 이력도 비교합니다. 같은 내용은 선택 없이 합칩니다. 설정 → Google 연동 · Drive → 연결 관리 → 자동 반영 이전 내용에서 이전 기록을 복원할 수 있습니다. 삭제 충돌·서로 다른 일정 연결·동시각의 다른 내용처럼 자동 판단이 어려운 경우만 내용을 확인합니다. Calendar 수정 충돌은 별도로 확인합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일과 업무 마감일은 별개이며, 기간 일정은 종료일 다음 날 완료로 표시됩니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
+        `<div class="stack manual-guide"><h3>5.0.0 화면 이동과 기록 되돌리기</h3><p>모바일의 뒤로가기와 브라우저 뒤로가기는 이전 화면·날짜·프로젝트로 돌아갑니다. 작성 중이라면 계속 작성·임시 보관·버리기로 내용을 보호합니다. 기록 수정용 되돌리기·다시 실행은 별개이며 PC에서는 Ctrl+Z·Ctrl+Shift+Z를 사용합니다.</p><h3>화면 공간과 표시 항목</h3><p>상단의 패널 아이콘으로 주 메뉴를 접고 펼칩니다. 메뉴를 접어도 이 버튼은 화면 위에 남습니다. 날짜별 목록의 개인 할 일·확인·질문 버튼으로 각각 접거나 다시 펼칠 수 있으며 업무 일정은 계속 표시됩니다. 이 표시 환경은 이 기기에만 저장되며 기록을 삭제하거나 동기화하지 않습니다. PC 월간 업무표에서는 열 머리글의 접기 버튼과 상단 복원 버튼을 사용합니다.</p><h3>글꼴·색상·입력</h3><p>나눔스퀘어 Regular·Bold·ExtraBold를 사용합니다. 일정 색상 칸의 견본은 일정 앞의 색상 막대에 적용됩니다. 비활성 입력은 흐리게 표시하고 잘못된 입력은 해당 칸의 설명을 확인합니다. 임시 작성본은 설정에서 복구하거나 삭제할 수 있습니다. 메모 입력칸은 길게 작성하기 편하도록 넓혔으며 긴 내용은 안에서 스크롤합니다. 마우스로 메모가 있는 업무에 올리면 미리보기가 표시됩니다. 휴대폰에서는 항목을 눌러 전체 메모를 확인합니다.</p><h3>Android 홈 위젯</h3><p>위젯 ⋮에서 하루 최대3·4·5개 보기를 선택합니다. 위젯마다 따로 저장되며 크기와 글씨 배율에 따라 표시 수가 줄 수 있습니다. 제목은 위에서부터 한 줄씩 나열하고 앞의 짧은 색상 막대로 구분합니다. +N은 더 있는 일정 수입니다. 날짜를 누르면 앱의 해당 날짜가 열립니다. 위젯은 마지막으로 전달받은 일정과 반영 시각을 표시하므로 Google이나 다른 기기의 변경은 앱을 열어 동기화해 주세요.</p><h3>PC에서 휴대폰 알림 보내기</h3><p>휴대폰의 설정 → 알림과 Android 위젯에서 PC 연동 알림을 켜고 PC 연결 코드를 만듭니다. PC의 설정 → 알림 → 휴대폰 알림 예약에 코드를 입력하면 연결됩니다. 같은 기기에서는 처음 한 번만 연결하며, 기기 변경·연결 해제 시 다시 연결합니다. PC를 끄기 전에 예약 확인됨 상태를 확인해 주세요. 종일 일정의 알림 기준은 오전 9시이며, 편집 화면에서는 알림을 미리 확인 처리하지 않습니다.</p><h3>알림과 수정 확인</h3><p>APK는 기기 설정에서 H.PLAN 알림을 켜고 OS 권한과10초 테스트를 확인합니다. 홈 화면 웹앱은 웹 알림을 허용합니다. Google 원본 일정은 Google 알림을 사용합니다. Drive는 최근 수정 내용을 자동 반영하며 예전 연동 기록은 저장 이력도 비교합니다. 같은 내용은 선택 없이 합칩니다. 설정 → Google 연동 · Drive → 연결 관리 → 자동 반영 이전 내용에서 이전 기록을 복원할 수 있습니다. 삭제 충돌·서로 다른 일정 연결·동시각의 다른 내용처럼 자동 판단이 어려운 경우만 내용을 확인합니다. Calendar 수정 충돌은 별도로 확인합니다.</p><h3>기본 사용</h3><p>업무·개인 일정·질문을 기록하고 프로젝트로 묶어 관리합니다. 일정의 점 세 개 메뉴에서 이월·복사·하위 업무·정렬을 사용할 수 있습니다.</p><p>기록은 기기 저장소에 먼저 보관됩니다. Google 연결 시 PC와 같은 계정의 H.PLAN 폴더를 사용합니다. 인터넷이나 로그인이 만료돼도 로컬 작성은 계속할 수 있습니다.</p><p>앱이 닫힌 동안의 전체 플래너 동기화는 보장하지 않습니다. 웹 알림을 켜면 최소 예약 정보는 암호화된 알림 서버가 처리합니다. Google 원본 일정은 Google 알림을 사용하고, H.PLAN 원본은 직접 설정한 H.PLAN 알림을 사용합니다. 기간 종료일이 있으면 그날까지, 없으면 업무 마감일까지 같은 일정이 표시됩니다. 명시한 기간 종료일 다음 날에는 자동 완료되지만 마감일만 설정한 일정은 자동 완료되지 않으며, 표시 기간 때문에 알림이 늘어나지 않습니다. Android 위젯은 앱의 테마를 따르며 마지막 갱신 시각을 표시합니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요. 개인 기록은 GitHub에 업로드하지 않습니다.</p><p><a href="../privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="../terms.html" target="_blank" rel="noopener">이용약관</a></p><p class="help">H.PLAN 모바일 ${APP_VERSION} · PC·APP·APK 공통 사용 안내</p></div>`,
       );
     case "report": {
       const { reportDialog } = await import("./reports-ui.mjs");

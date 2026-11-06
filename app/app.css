@@ -1283,3 +1283,13 @@ code,pre,kbd,samp,option{font-family:NanumSquare,sans-serif;font-synthesis:none}
 
 /* 3.4: first title line marker; wrapping and metadata do not stretch it. */
 .entry,.entry.child{border-left:1px solid var(--line)}.entry-title{position:relative;padding-inline-start:7px}.entry-title::before{content:"";position:absolute;inset-inline-start:0;top:.275em;width:3px;height:1em;background:var(--event-color,var(--red));pointer-events:none}
+
+/* Spacious memo editor and mouse-only note preview. */
+textarea[name="notes"]{min-height:216px;max-height:55vh;overflow-y:auto;resize:vertical;line-height:1.7}
+.memo-tooltip{position:fixed;z-index:1200;width:360px;max-width:calc(100vw - 16px);max-height:min(320px,50vh);padding:16px 18px 13px;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);box-shadow:0 12px 36px #0002;font-family:NanumSquare,sans-serif;font-size:14px;font-weight:400;line-height:1.7;pointer-events:none;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.memo-tooltip[hidden]{display:none}
+.memo-tooltip-heading{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:var(--ink)}
+.memo-tooltip-heading:before{content:'';width:3px;height:13px;background:var(--red);border-radius:2px}
+.memo-tooltip-content{white-space:pre-wrap;overflow-wrap:anywhere;overflow:hidden;min-height:0}
+.memo-tooltip-hint{flex-shrink:0;padding-top:9px;border-top:1px solid var(--line);color:var(--muted);font-size:11px;font-weight:700}
+@media(hover:none),(pointer:coarse){.memo-tooltip{display:none}}

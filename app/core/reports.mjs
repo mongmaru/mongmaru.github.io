@@ -2,6 +2,7 @@ let embeddedFonts='';
 export async function prepareFonts(){if(embeddedFonts)return;const list=await Promise.all([['NanumSquareR.ttf',400],['NanumSquareB.ttf',700]].map(async([name,weight])=>{const res=await fetch(new URL('../fonts/'+name,import.meta.url));if(!res.ok)throw Error('인쇄 글꼴을 불러오지 못했습니다.');const bytes=new Uint8Array(await res.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));return '@font-face{font-family:NanumSquare;font-weight:'+weight+';src:url(data:font/ttf;base64,'+btoa(binary)+')}';}));embeddedFonts=list.join('');}
 const fontCSS=()=>embeddedFonts;
 import { dateOK, expandEntries } from "./domain.mjs";
+import {displayEndDate} from "./calendar-recurrence.mjs";
 const labels = {
   planned: "예정",
   progress: "진행 중",
@@ -46,16 +47,16 @@ function selectReport(s, o) {
           !["done", "answered", "canceled", "moved"].includes(e.status)) &&
         (!o.kinds || o.kinds.includes(e.kind)),
     )
-    .map(e=>({...e,reportStartDate:e.date<start?start:e.date,reportEndDate:(e.endDate||e.date)>end?end:(e.endDate||e.date)}))
+    .map(e=>({...e,reportStartDate:e.date<start?start:e.date,reportEndDate:displayEndDate(e)>end?end:displayEndDate(e)}))
     .sort((a,b)=>a.reportStartDate.localeCompare(b.reportStartDate)||(a.order??0)-(b.order??0));
 }
 function reportDate(e,short=false) {
-  const start=e.reportStartDate||e.date,end=e.reportEndDate||e.endDate||e.date;
+  const start=e.reportStartDate||e.date,end=e.reportEndDate||displayEndDate(e);
   const format=date=>short?date.slice(5).replace('-','.'):date;
   return format(start)+(end!==start?' ~ '+format(end):'');
 }
 function scheduleDetail(e) {
-  return [e.endDate?'기간: '+e.date+' ~ '+e.endDate:'',e.allDay===false?'시간: '+e.startTime+' ~ '+e.endTime+' ('+(e.timeZone||'Asia/Seoul')+')':''];
+  return [displayEndDate(e)!==e.date?'기간: '+e.date+' ~ '+displayEndDate(e):'',e.allDay===false?'시간: '+e.startTime+' ~ '+e.endTime+' ('+(e.timeZone||'Asia/Seoul')+')':''];
 }
 function title(o) {
   return (

@@ -1,6 +1,6 @@
 // Shared PC/browser core; regenerate with node scripts/prepare-core.mjs
 import {clone,validate,apply,dateOK,notificationDefaults} from "./domain.mjs";
-import {shiftDate,dateInZone,zonedEpoch,recurrenceDateValues,isRecurring,recurrenceDates,parseRule} from "./calendar-recurrence.mjs";
+import {shiftDate,dateInZone,zonedEpoch,recurrenceDateValues,isRecurring,recurrenceDates,parseRule,displayEndDate} from "./calendar-recurrence.mjs";
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const safeEntryId=v=>typeof v==='string'&&/^[A-Za-z0-9_.:-]{1,160}$/.test(v)&&!['__proto__','constructor','prototype'].includes(v);
 // Four independent 32-bit hashes yield compact deterministic identifiers on Node
@@ -38,14 +38,17 @@ function entryToEvent(e,projects=[]) {
   const project=projects.find(p=>p.id===e.projectId),projectName=project?.name||'';
   const description=(e.notes||'')+(e.answer?'\n\n[답변]\n'+e.answer:'');
   let start,end;
-  if(e.allDay!==false){start={date:e.date};end={date:shiftDate(e.endDate||e.date,1)};}
+  // Only H.PLAN-owned all-day events infer a schedule from a deadline. Imported
+  // Google times and explicit event periods retain their original semantics.
+  const duePeriod=e.allDay!==false&&(e.origin||'hplan')==='hplan'&&!e.endDate&&displayEndDate(e)>e.date;
+  if(e.allDay!==false){start={date:e.date};end={date:shiftDate(duePeriod?displayEndDate(e):(e.endDate||e.date),1)};}
   else {
     const zone=e.timeZone||'Asia/Seoul';
     start={dateTime:new Date(zonedEpoch(e.date,e.startTime,zone)).toISOString(),timeZone:zone};
     end={dateTime:new Date(zonedEpoch(e.endDate||e.date,e.endTime,zone)).toISOString(),timeZone:zone};
   }
   return {colorId:e.eventColorId===undefined?(e.google?.resource?.colorId||null):(e.eventColorId||null),summary:(projectName?'['+projectName+'] ':'')+e.text,description,start,end,recurrence:recurrenceLines(e),
-    extendedProperties:{private:{hplanId:e.id,hplanOrigin:e.origin||'hplan',hplanKind:e.kind,hplanStatus:e.status,hplanDueDate:e.dueDate||'',hplanEndDate:e.endDate||'',hplanTimeZone:e.timeZone||'Asia/Seoul',hplanProjectId:e.projectId||'',hplanProjectName:projectName}},
+    extendedProperties:{private:{hplanId:e.id,hplanOrigin:e.origin||'hplan',hplanKind:e.kind,hplanStatus:e.status,hplanDueDate:e.dueDate||'',hplanEndDate:e.endDate||'',hplanTimeZone:e.timeZone||'Asia/Seoul',hplanProjectId:e.projectId||'',hplanProjectName:projectName,hplanDisplayEndDate:duePeriod?displayEndDate(e):'',hplanDisplayStartDate:duePeriod?e.date:''}},
     ...((e.origin||'hplan')==='hplan'?{reminders:{useDefault:false,overrides:[]}}:{}),};
 }
 function wallParts(value,zone) {
@@ -60,10 +63,12 @@ function eventProjection(event,defaultTimeZone='Asia/Seoul') {
   const timeZone=event.start?.timeZone||event.end?.timeZone||props.hplanTimeZone||defaultTimeZone;
   const start=allDay?{date:event.start.date,time:null}:wallParts(event.start.dateTime,timeZone);
   const end=allDay?{date:shiftDate(event.end?.date||shiftDate(start.date,1),-1),time:null}:wallParts(event.end?.dateTime||event.start.dateTime,timeZone);
-  const endDate=end.date===start.date&&!props.hplanEndDate?null:end.date;
+  const displayDays=dateOK(props.hplanDisplayStartDate)&&dateOK(props.hplanDisplayEndDate)?Math.round((Date.parse(props.hplanDisplayEndDate+'T12:00:00Z')-Date.parse(props.hplanDisplayStartDate+'T12:00:00Z'))/86400000):null;
+  const duePeriod=allDay&&props.hplanOrigin==='hplan'&&!props.hplanEndDate&&props.hplanDueDate===props.hplanDisplayEndDate&&displayDays!==null&&displayDays>=0&&shiftDate(start.date,displayDays)===end.date;
+  const endDate=duePeriod||end.date===start.date&&!props.hplanEndDate?null:end.date;
   const lines=event.recurrence||[];
   const exceptions=recurrenceDateValues(lines,'EXDATE',timeZone).filter(dateOK);
-  return {eventColor:event.colorId||null,title:event.summary||'(제목 없음)',description:event.description||'',schedule:{date:start.date,endDate,allDay,startTime:start.time,endTime:end.time,timeZone},recurrence:{rule:lines.find(x=>/^RRULE:/.test(x))||null,exceptions,lines:[...lines].sort()},status:props.hplanStatus||'planned',dueDate:dateOK(props.hplanDueDate)?props.hplanDueDate:null};
+  return {eventColor:event.colorId||null,title:event.summary||'(제목 없음)',description:event.description||'',schedule:{date:start.date,endDate,allDay,startTime:start.time,endTime:end.time,timeZone},recurrence:{rule:lines.find(x=>/^RRULE:/.test(x))||null,exceptions,lines:[...lines].sort()},status:props.hplanStatus||'planned',dueDate:duePeriod?end.date:dateOK(props.hplanDueDate)?props.hplanDueDate:null};
 }
 function localProjection(e,projects) {
   if(e.google?.service==='tasks')return {title:e.text,description:e.notes||'',dueDate:e.dueDate||null,completed:done(e)};
@@ -113,9 +118,9 @@ function occurrenceBase(master,occurrence,projects) {
   return base;
 }
 function inImportRange(entry,cutoff) {
-  if((entry.endDate||entry.date)>=cutoff)return true;
+  if(displayEndDate(entry)>=cutoff)return true;
   if(!isRecurring(entry))return false;
-  const duration=entry.endDate?Math.round((Date.parse(entry.endDate+'T12:00:00Z')-Date.parse(entry.date+'T12:00:00Z'))/86400000):0;
+  const duration=Math.round((Date.parse(displayEndDate(entry)+'T12:00:00Z')-Date.parse(entry.date+'T12:00:00Z'))/86400000);
   // A recurring master may have ended before the cutoff while its final
   // occurrence still overlaps the first imported day, including across UTC.
   if(recurrenceDates(entry,cutoff,shiftDate(cutoff,-duration)).length)return true;
@@ -126,14 +131,20 @@ function inImportRange(entry,cutoff) {
   return true;
 }
 const remindersDisabled=reminders=>reminders?.useDefault===false&&!(reminders.overrides?.length||0);
+function inferredRangeNeedsPatch(e,resource) {
+  if(e.origin!=='hplan'||e.allDay===false||e.endDate)return false;
+  const end=displayEndDate(e),props=resource?.extendedProperties?.private||{},inferred=end>e.date;
+  return !!((inferred||props.hplanDisplayEndDate)&&(resource?.end?.date!==shiftDate(end,1)||props.hplanDisplayEndDate!==(inferred?end:'')||props.hplanDisplayStartDate!==(inferred?e.date:'')));
+}
 function eventPatch(e,desired,remote,conflicts,projects) {
   const event=entryToEvent(e,projects),patch={};
+  const inferredRange=!conflicts.schedule&&!conflicts.dueDate&&inferredRangeNeedsPatch(e,e.google.resource);
   if(!conflicts.eventColor&&!same(desired.eventColor,remote.eventColor))patch.colorId=desired.eventColor;
   if(!conflicts.title&&!same(desired.title,remote.title))patch.summary=event.summary;
   if(!conflicts.description&&!same(desired.description,remote.description))patch.description=event.description;
-  if(!conflicts.schedule&&!same(desired.schedule,remote.schedule)){patch.start=event.start;patch.end=event.end;}
+  if(!conflicts.schedule&&!same(desired.schedule,remote.schedule)||inferredRange){patch.start=event.start;patch.end=event.end;}
   if(!conflicts.recurrence&&!same(desired.recurrence,remote.recurrence))patch.recurrence=event.recurrence;
-  if((!conflicts.status&&!same(desired.status,remote.status))||(!conflicts.dueDate&&!same(desired.dueDate,remote.dueDate))) {
+  if((!conflicts.status&&!same(desired.status,remote.status))||(!conflicts.dueDate&&!same(desired.dueDate,remote.dueDate))||patch.start) {
     const privateProps={...(e.google.resource?.extendedProperties?.private||{}),...event.extendedProperties.private};
     if(conflicts.status)privateProps.hplanStatus=e.google.resource?.extendedProperties?.private?.hplanStatus||'planned';
     if(conflicts.dueDate)privateProps.hplanDueDate=remote.dueDate||'';
@@ -274,7 +285,7 @@ class CalendarSync {
             same(resource,entry.google.resource)&&!Object.keys(entry.google.conflicts||{}).length&&
             same(localProjection(entry,linkedState.projects),entry.google.base)&&
             (this.ledger.colors?.[container]||entry.google.calendarColor||null)===(entry.google.calendarColor||null)&&
-            (entry.origin!=='hplan'||remindersDisabled(resource.reminders)))continue;
+            (entry.origin!=='hplan'||remindersDisabled(resource.reminders))&&!inferredRangeNeedsPatch(entry,resource))continue;
           // ETags are opaque: an observation merged from Drive may be either
           // older or newer than this cursor's cached view. Confirm only that
           // changed link instead of guessing which device observed it last.
