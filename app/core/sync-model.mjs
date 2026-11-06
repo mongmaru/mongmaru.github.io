@@ -404,12 +404,34 @@ function mergeRecovery(a, b) {
 function recoveries(graph) { check(graph); return clone(graph.recovery || []); }
 function editTime(version) {
  const value=version.value;if(!value||value.deletedAt)return NaN;
- const observed=Date.parse(version.at),edit=value.contentEdit;
- if(edit?.source==='automatic')return NaN;
+ const observed=Date.parse(version.at),provenance=value.contentEdit;
+ const edit=provenance?.source==='automatic'?provenance.previous:provenance;
+ if(provenance?.source==='automatic'&&!edit)return NaN;
  const at=Date.parse(edit?.at||value.updatedAt);
  if(!Number.isFinite(at))return value.updatedAt?NaN:observed;
  if(at>observed)return NaN;
  return at;
+}
+function editEvidence(graph, version) {
+  const time=editTime(version),value=version.value;
+  if(value?.status!=='moved'||(!value.destinationId&&!value.movedTo))return {time};
+  // Version 4 carried the source without stamping it. Only the reciprocal
+  // destination's immutable creation can prove when that user action occurred;
+  // a later upload or a later destination edit cannot provide that evidence.
+  const unproven={time,unprovenCarry:true};
+  if(!Number.isFinite(time)&&(value.contentEdit?.source!=='automatic'||value.contentEdit.previous))return unproven;
+  if(!safeId(value.destinationId)||!dateOK(value.movedTo))return unproven;
+  const destinations=graph.records['entries/'+value.destinationId];
+  if(!destinations?.length)return unproven;
+  const created=Date.parse(destinations[0].value?.createdAt);
+  if(!Number.isFinite(created)||created>Date.now()||created>Date.parse(version.at))return unproven;
+  for(const destination of destinations){
+    const copy=destination.value;
+    if(!copy||copy.id!==value.destinationId||copy.sourceId!==value.id||copy.date!==value.movedTo||
+      (copy.origin!==undefined&&copy.origin!=='hplan')||Date.parse(copy.createdAt)!==created||created>Date.parse(destination.at))return unproven;
+  }
+  return {time:Math.max(Number.isFinite(time)?time:-Infinity,created),
+    ...(created>time||!Number.isFinite(time)?{carryAt:destinations[0].value.createdAt}:{})};
 }
 function protectedLink(value) {
  const g=value.google;
@@ -421,16 +443,42 @@ function remember(graph, key, versions, selectedId) {
 }
 function reconcileLatest(graph) {
   check(graph); const result = clone(graph);
-  for (const {key, versions} of conflicts(graph)) {
+  // Equal-content heads still carry different edit evidence. Consolidate them
+  // too, before projection/materialization can discard the newest evidence.
+  for (const [key, versions] of Object.entries(graph.records)) {
+    if (versions.length < 2) continue;
+    // Two devices may independently choose the same exact value. Its evidence
+    // is already identical; another revision would cause needless ping-pong.
+    if (new Set(versions.map(v => stable(v.value))).size === 1) continue;
     if (!key.startsWith('entries/') || versions.some(v => !v.value || v.value.deletedAt || Object.keys(v.value.google?.conflicts || {}).length)) continue;
     if (new Set(versions.map(v => protectedLink(v.value))).size !== 1) continue;
-    const times = versions.map(editTime);
-    if (times.some(time => !Number.isFinite(time))) continue;
-    const latest = Math.max(...times), winners = versions.filter((v,i) => times[i] === latest);
-    if (new Set(winners.map(v => {const x=clone(v.value);delete x.google;return comparable(x,key);})).size !== 1) continue;
-    const selected = winners.toSorted((a,b)=>Date.parse(b.at)-Date.parse(a.at)||a.id.localeCompare(b.id))[0];
+    const evidence=new Map(versions.map(v=>[v,editEvidence(graph,v)]));
+    const plannerContent = v => {const value=clone(v.value);delete value.google;return comparable(value,key);};
+    let winners = versions;
+    // A different three-way observation baseline is not a planner edit. Resolve
+    // equal content before requiring edit provenance; legacy automatic heads may
+    // have no genuine edit time at all. Every original remains recoverable.
+    if (new Set(versions.map(plannerContent)).size !== 1) {
+      // Automatic materialization/observations cannot outrank an actual edit by
+      // their later upload time, nor keep that actual edit permanently blocked.
+      const edited = versions.filter(v => v.value.contentEdit?.source !== 'automatic' || v.value.contentEdit.previous || evidence.get(v).carryAt);
+      if (!edited.length) continue;
+      const times = edited.map(v=>evidence.get(v).time);
+      if (times.some(time => !Number.isFinite(time))) continue;
+      const latest = Math.max(...times);
+      // Missing legacy carry evidence must not silently turn the old source
+      // timestamp into proof that a competing planned edit happened later.
+      winners = edited.filter((v,i) => times[i] === latest);
+      if(versions.some(v=>evidence.get(v).unprovenCarry&&!(evidence.get(v).time>=latest)&&
+        winners.some(w=>w.value.status!=='moved'||w.value.destinationId!==v.value.destinationId||w.value.movedTo!==v.value.movedTo)))continue;
+      if (new Set(winners.map(plannerContent)).size !== 1) continue;
+    }
+    const evidenceTime = v => Number.isFinite(evidence.get(v).time) ? evidence.get(v).time : -Infinity;
+    const selected = winners.toSorted((a,b)=>evidenceTime(b)-evidenceTime(a)||Date.parse(b.at)-Date.parse(a.at)||a.id.localeCompare(b.id))[0];
     remember(result,key,versions,selected.id);
-    put(result,key,selected.value);
+    const value=clone(selected.value),carryAt=evidence.get(selected).carryAt;
+    if(carryAt){value.updatedAt=carryAt;value.contentEdit={source:'user',at:carryAt};}
+    put(result,key,value);
   }
   return result;
 }

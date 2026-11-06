@@ -49,7 +49,8 @@ function calendarFields(v,old) {
 }
 function completeEndedPeriods(entries, now = new Date()) {
   for(const e of entries) if(e.endDate&&!e.deletedAt&&!['done','answered','canceled','moved'].includes(e.status)&&!(!e.seriesId&&isRecurring(e))&&e.endDate<dateInZone(now,e.timeZone||'Asia/Seoul')) {
-    e.status=e.kind==='question'?'answered':'done';e.doneAt=new Date(now).toISOString();e.updatedAt=e.doneAt;e.contentEdit={source:'automatic',at:e.doneAt};
+    const previous=e.contentEdit?.source==='automatic'?e.contentEdit.previous:(e.contentEdit||{source:'legacy',at:e.updatedAt});
+    e.status=e.kind==='question'?'answered':'done';e.doneAt=new Date(now).toISOString();e.updatedAt=e.doneAt;e.contentEdit={source:'automatic',at:e.doneAt,...(previous?{previous:clone(previous)}:{})};
   }
   return entries;
 }
@@ -232,6 +233,9 @@ function validate(s) {
 }
 function apply(s, a) {
   const now = new Date().toISOString();
+  // Stamp the records explicitly changed by this user action. A timestamp scan
+  // also catches automatic materialization from the same millisecond.
+  const stamp = e => {e.updatedAt=now;e.contentEdit={source:'user',at:now};return e;};
   if(['entry.save','entry.delete'].includes(a.type)&&['this','following','all'].includes(a.scope)) {
     const requested=a.type==='entry.save'?a.value?.id:a.ids?.[0];
     let selected=s.entries.find(e=>e.id===requested),master=selected?.seriesId?s.entries.find(e=>e.id===selected.seriesId):selected;
@@ -269,7 +273,7 @@ function apply(s, a) {
           const kept=values.filter((v,i)=>future?dates[i]>=occurrenceDate:dates[i]<occurrenceDate);return kept.length?[prefix+kept.join(',')]:[];
         });
         master.recurrenceLines=rangeLines(false);
-        master.recurrenceUntil=shiftDate(occurrenceDate,-1);master.updatedAt=now;
+        master.recurrenceUntil=shiftDate(occurrenceDate,-1);stamp(master);
         if(a.type==='entry.delete') {
           const ids=s.entries.filter(e=>e.seriesId===master.id&&(e.originalDate||e.date)>=occurrenceDate&&!e.deletedAt).map(e=>e.id);
           if(ids.length)apply(s,{type:'entry.delete',ids});s.updatedAt=now;return validate(s);
@@ -408,10 +412,11 @@ function apply(s, a) {
         dest = s.projects.find((p) => p.id === a.to);
       if (!src || !dest) throw Error("프로젝트를 찾을 수 없습니다.");
       dest.aliases = [...new Set([...dest.aliases, src.name, ...src.aliases])];
+      dest.updatedAt = now;
       for (const e of s.entries)
-        if (e.projectId === src.id) e.projectId = dest.id;
+        if (e.projectId === src.id) {e.projectId = dest.id;stamp(e);}
       for (const t of s.templates)
-        if (t.projectId === src.id) t.projectId = dest.id;
+        if (t.projectId === src.id) {t.projectId = dest.id;t.updatedAt=now;}
       s.projects = s.projects.filter((p) => p.id !== src.id);
       break;
     }
@@ -483,6 +488,7 @@ function apply(s, a) {
           ? old?.doneAt || now
           : null,
       };
+      stamp(e);
       if(a.recurrenceChanged){e.recurrenceRule=v.recurrenceRule??null;e.recurrence=['daily','weekdays','weekly','monthly'].includes(v.recurrence)?v.recurrence:'none';e.recurrenceLines=[];e.recurrenceExceptions=[];}
       if (old) {
         e.seriesEdited = !!old.seriesId;
@@ -493,6 +499,7 @@ function apply(s, a) {
           .at(-1);
         s.entries[s.entries.indexOf(old)] = e;
         for (const child of s.entries.filter((c) => c.parentId === e.id)) {
+          if(child.date!==e.date||child.projectId!==e.projectId||child.kind!==e.kind)stamp(child);
           child.date = e.date;
           child.projectId = e.projectId;
           child.kind = e.kind;
@@ -529,7 +536,7 @@ function apply(s, a) {
           throw Error("상태가 올바르지 않습니다.");
         e.status = a.status;
         e.doneAt = ["done", "answered"].includes(a.status) ? now : null;
-        e.updatedAt = now;
+        stamp(e);
         if(e.seriesId)e.seriesEdited=true;
       }
       break;
@@ -550,23 +557,24 @@ function apply(s, a) {
           item.deletedAt = a.type === "entry.delete" ? now : null;
           if (item.seriesId === e.id)
             item.deletedBySeries = a.type === "entry.delete" ? e.id : null;
-          item.updatedAt = now;
+          stamp(item);
         }
-        if (a.type === "entry.restore" && e.parentId)
-          find(e.parentId).deletedAt = null;
-        if(a.type==='entry.restore'&&e.seriesId){const master=s.entries.find(x=>x.id===e.seriesId);if(master){master.recurrenceExceptions=(master.recurrenceExceptions||[]).filter(date=>date!==(e.originalDate||e.date));master.updatedAt=now;}if(e.google?.deleted)e.google=undefined;e.calendarRestorePending=true;}
+        if (a.type === "entry.restore" && e.parentId) {
+          const parent=find(e.parentId);if(parent.deletedAt){parent.deletedAt=null;stamp(parent);}
+        }
+        if(a.type==='entry.restore'&&e.seriesId){const master=s.entries.find(x=>x.id===e.seriesId);if(master){const previous=master.recurrenceExceptions||[];master.recurrenceExceptions=previous.filter(date=>date!==(e.originalDate||e.date));if(master.recurrenceExceptions.length!==previous.length)stamp(master);}if(e.google?.deleted)e.google=undefined;e.calendarRestorePending=true;}
       }
       if(a.type==='entry.delete') {
         s.calendarDeletions={...(s.calendarDeletions||{})};
         for(const e of s.entries)if(e.origin==='google'&&e.deletedAt&&e.google)s.calendarDeletions[e.id]={entryId:e.id,google:clone(e.google),origin:e.origin,at:e.deletedAt};
         const removed=new Set(s.entries.filter(e=>e.origin==='google'&&e.deletedAt).map(e=>e.id));
         s.entries=s.entries.filter(e=>!removed.has(e.id));
-        for(const e of s.entries)if(removed.has(e.parentId))e.parentId=null;
+        for(const e of s.entries)if(removed.has(e.parentId)){e.parentId=null;stamp(e);}
       } else for(const e of s.entries)if(!e.deletedAt&&s.calendarDeletions)delete s.calendarDeletions[e.id];
       break;
     case 'entry.recurrence.exclude': {
       const e=find(a.id);if(!dateOK(a.date)||!isRecurring(e))throw Error('반복 예외 날짜를 확인해 주세요.');
-      e.recurrenceExceptions=[...new Set([...(e.recurrenceExceptions||[]),a.date])];e.updatedAt=now;
+      e.recurrenceExceptions=[...new Set([...(e.recurrenceExceptions||[]),a.date])];stamp(e);
       s.entries=s.entries.filter(x=>!(x.seriesId===e.id&&x.date===a.date&&!x.seriesEdited));break;
     }
     case "entry.purge": {
@@ -612,16 +620,19 @@ function apply(s, a) {
           doneAt: null,
           createdAt: now,
           updatedAt: now,
+          contentEdit:{source:'user',at:now},
         };
         if (a.type === "entry.carry") {
           if (e.kind === "question") {
             e.notes = (e.notes ? e.notes + "\n" : "") + a.date + " 재확인";
             e.reviewDate = a.date;
+            stamp(e);
             continue;
           }
           e.status = "moved";
           e.movedTo = a.date;
           e.destinationId = copied.id;
+          stamp(e);
         }
         s.entries.push(copied);
       }
@@ -629,7 +640,7 @@ function apply(s, a) {
     }
     case "entry.reorder": {
       const es = chosen();
-      es.forEach((e, i) => (e.order = i));
+      es.forEach((e, i) => {if(e.order!==i){e.order=i;stamp(e);}});
       break;
     }
     case "template.save": {
@@ -713,10 +724,6 @@ function apply(s, a) {
       throw Error("지원하지 않는 작업입니다.");
   }
   s.updatedAt = now;
-  // Only domain actions are user edits. Observation/import code stamps its own
-  // provenance, and automatic recurrence/period work must retain that source.
-  if (a.type !== 'materialize') for (const e of s.entries)
-    if (e.updatedAt === now) e.contentEdit = {source:'user',at:now};
   validate(s);
   return s;
 }

@@ -222,11 +222,53 @@ function capture(record) {
     meta.baseline = clone(record.state);
   }
 }
+function historyEntryContent(entry) {
+  const value=clone(entry);
+  for(const key of ['createdAt','updatedAt','contentEdit'])delete value[key];
+  if(['done','answered'].includes(value.status))delete value.doneAt;
+  // Match the effective legacy defaults used by Drive semantic comparison.
+  // Resource fallbacks must be read before observation copies are discarded.
+  const defaults={
+    allDay:true,endDate:null,startTime:null,endTime:null,timeZone:'Asia/Seoul',
+    recurrenceRule:null,recurrenceExceptions:[],recurrenceLines:value.google?.resource?.recurrence||[],
+    notifications:{enabled:false,beforeMinutes:5,repeatMinutes:5,count:5},
+    origin:'hplan',eventColorId:value.google?.resource?.colorId||null,seriesEdited:false,
+  };
+  for(const [key,fallback]of Object.entries(defaults))if(value[key]===undefined)value[key]=fallback;
+  if(value.google){
+    for(const key of ['etag','resource','calendarColor','base'])delete value.google[key];
+    if(value.google.generation===0)delete value.google.generation;
+    if(value.google.deleted===false)delete value.google.deleted;
+    for(const conflict of Object.values(value.google.conflicts||{}))
+      if(conflict&&typeof conflict==='object')delete conflict.at;
+  }
+  return model.stable(value);
+}
+function restoreUserEdits(current, restored) {
+  // Undo/redo/backup restore are new choices, not old edits replayed at their
+  // original time. Observation-only changes must not refresh user provenance.
+  const next=clone(restored),previous=new Map(current.entries.map(entry=>[entry.id,entry])),at=new Date().toISOString();
+  for(const entry of next.entries){
+    const old=previous.get(entry.id);
+    if(!old||historyEntryContent(old)!==historyEntryContent(entry)){
+      entry.updatedAt=at;entry.contentEdit={source:'user',at};
+    }else{
+      entry.createdAt=old.createdAt;entry.updatedAt=old.updatedAt;
+      if(old.contentEdit)entry.contentEdit=clone(old.contentEdit);else delete entry.contentEdit;
+    }
+  }
+  next.updatedAt=at;
+  return next;
+}
 export class Repository {
   static async open(store) {
     const repo = new Repository(store);
     await repo.update((r) => {
       validateState(clone(r.state));
+      // Upgrade already-stored graphs before their conflict count reaches UI.
+      // Applied baselines stay untouched until the resolved graph is projected.
+      for (const meta of Object.values(r.accounts || {}))
+        meta.graph = model.reconcileLatest(meta.graph);
       return r;
     });
     return repo;
@@ -314,7 +356,7 @@ export class Repository {
     return this.update((r) => {
       if (r.past.length) {
         r.future.push(clone(r.state));
-        r.state = clone(r.past.pop());
+        r.state = restoreUserEdits(r.state,r.past.pop());
         capture(r);
       }
       return r;
@@ -324,7 +366,7 @@ export class Repository {
     return this.update((r) => {
       if (r.future.length) {
         r.past.push(clone(r.state));
-        r.state = clone(r.future.pop());
+        r.state = restoreUserEdits(r.state,r.future.pop());
         capture(r);
       }
       return r;
@@ -344,7 +386,7 @@ export class Repository {
     const next = validateState(clone(envelope.data));
     return this.update((r) => {
       addBackup(r, "before-restore");
-      r.state = next;
+      r.state = restoreUserEdits(r.state,next);
       r.past = [];
       r.future = [];
       capture(r);

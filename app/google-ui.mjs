@@ -32,7 +32,7 @@ function notificationPanel(notifications,native,policy,auth){
  ${policy.native?`<p class="help">${cloud?'서버에 등록된 일정은 Chrome의 보안 연결로 H.PLAN에 표시합니다. 기기 예약은 일시 중지됩니다.':requested?'연동 알림 상태를 확인하고 있습니다. 앱과 Chrome의 알림 허용 상태를 확인해 주세요.':'기기 예약을 쓰려면 Android 설정에서 ‘이 기기에서 알림 사용’을 켜세요.'}</p><div class="row">${button(cloud||requested?'Android 기기 예약으로 돌아가기':'PC 연동 알림 켜기',cloud||requested?'notifications-cloud-disable':'notifications-cloud-enable')}</div>`:''}
  ${policy.native&&status&&!cloud?`<p class="help" role="status">${status.mode==='exact'?'Android 정확한 알림 예약 사용 중':status.mode==='inexact'?'정확한 알림 권한이 없어 지연될 수 있습니다. Android 알림·위젯 설정에서 정확한 알림을 허용해 주세요.':status.mode==='blocked'?'Android 알림 권한을 확인해 주세요.':'Android 앱 알림 꺼짐'} · 예약 ${Number(status.scheduled)||0}개${status.nextAt?' · 다음 예약 '+esc(new Date(status.nextAt).toLocaleString('ko-KR')):''}</p>`:''}
  <div class="google-feature"><strong>PC에서 휴대전화로 알림 보내기</strong>
- <p class="help">Google 계정을 연결하고 이 휴대전화의 ${policy.native?'PC 연동 알림':'웹 알림'}을 켜세요. 이곳에서 만든 10분짜리 코드를 같은 계정으로 연결한 PC의 알림 설정에 입력하세요.</p>
+ <p class="help">처음 한 번 연결하면 PC에서 저장한 알림을 이 휴대전화로 보냅니다. Google 계정을 연결하고 ${policy.native?'PC 연동 알림':'웹 알림'}을 켠 뒤, 여기서 만든 10분짜리 코드를 PC의 알림 설정에 입력하세요. 기기를 바꾸거나 연결을 해제한 경우 다시 연결합니다.</p>
  ${canPair?`<div class="row">${button('PC 연결 코드 만들기','notifications-pair')}${button('PC 연결 상태 확인','notifications-pair-status')}${button('PC 알림 연결 끊기','notifications-unpair')}</div>${notifications?.pcPaired?`<p class="help" role="status">PC 알림 연결됨</p>`:''}`:''}
  </div>
  <p class="help">${policy.native?'':'iPhone은 홈 화면에 설치한 뒤 알림을 허용해 주세요. '}Google 원본은 Google 알림을 사용합니다. 절전·네트워크 상태에 따라 알림이 늦어질 수 있습니다.</p></section>`;

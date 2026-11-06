@@ -125,6 +125,7 @@ function inImportRange(entry,cutoff) {
   if(rule.COUNT&&recurrenceDates({...entry,google:undefined,recurrenceExceptions:[]},shiftDate(cutoff,-1)).length>=+rule.COUNT)return false;
   return true;
 }
+const remindersDisabled=reminders=>reminders?.useDefault===false&&!(reminders.overrides?.length||0);
 function eventPatch(e,desired,remote,conflicts,projects) {
   const event=entryToEvent(e,projects),patch={};
   if(!conflicts.eventColor&&!same(desired.eventColor,remote.eventColor))patch.colorId=desired.eventColor;
@@ -138,7 +139,9 @@ function eventPatch(e,desired,remote,conflicts,projects) {
     if(conflicts.dueDate)privateProps.hplanDueDate=remote.dueDate||'';
     patch.extendedProperties={...(e.google.resource?.extendedProperties||{}),private:privateProps};
   }
-  if(e.origin==='hplan'&&(!same(e.google.resource?.reminders,{useDefault:false,overrides:[]})))patch.reminders={useDefault:false,overrides:[]};
+  // Google omits empty overrides. Both representations mean no reminders;
+  // comparing their JSON shapes would PATCH every original on every poll.
+  if(e.origin==='hplan'&&!remindersDisabled(e.google.resource?.reminders))patch.reminders={useDefault:false,overrides:[]};
   return patch;
 }
 class CalendarSync {
@@ -154,6 +157,7 @@ class CalendarSync {
   async persist(){this.guard();await this.saveLinkState(this.accountId,clone(this.ledger));}
   run(){if(this.running)return this.running;this.running=this.perform().finally(()=>{this.running=null;});return this.running;}
   async perform() {
+    this.writeFailures=new Map();
     this.guard();const loaded=await this.loadLinkState(this.accountId);
     this.ledger={version:1,links:{},calendars:{},...(loaded||{})};this.result={imported:0,exported:0,deleted:0,conflicts:[],errors:[],lastSyncAt:loaded?.lastSyncAt||null,lastAttemptAt:null,cutoff:null};
     const shared=(await this.getState()).calendarAccounts?.[this.accountId]?.cutoff;
@@ -192,11 +196,22 @@ class CalendarSync {
     this.result.errors.push({service,id:id||null,status,message:e.message||'Google 동기화에 실패했습니다.',phase,operation,diagnostic});
   }
   selected(link,service,container){return link.service===service&&(service==='calendar'?link.calendarId:link.taskListId)===container;}
+  async write(service,operation){
+    this.guard();if(this.writeFailures.has(service))throw this.writeFailures.get(service);
+    try{return await operation();}catch(error){
+      // A network/temporary/quota failure applies to this service for this run.
+      // Keep reads and the other service available; retry pending work only in
+      // a later run. In particular, never replay an ambiguously completed write.
+      if(error.code==='TEMPORARY'||['TypeError','TimeoutError','AbortError'].includes(error.name)||error.status===408||error.status===429||error.status>=500||
+        ['rate-limit','scope','api-disabled'].includes(error.diagnostic?.reason))this.writeFailures.set(service,error);
+      throw error;
+    }
+  }
   async remote(link){return link.service==='calendar'?this.client.getEvent(link.calendarId,link.id):this.client.getTask(link.taskListId,link.id);}
   async removeRemote(link){
     this.guard();let resource;try{resource=await this.remote(link);}catch(e){if(e.status===404||e.status===410)return;throw e;}
     if(!resource||resource.status==='cancelled'||resource.deleted)return;
-    this.guard();if(link.service==='calendar')await this.client.deleteEvent(link.calendarId,link.id,resource.etag);else await this.client.deleteTask(link.taskListId,link.id,resource.etag);
+    await this.write(link.service,()=>link.service==='calendar'?this.client.deleteEvent(link.calendarId,link.id,resource.etag):this.client.deleteTask(link.taskListId,link.id,resource.etag));
   }
   async service(service,container) {
     try {
@@ -247,10 +262,19 @@ class CalendarSync {
         else {await this.change(s=>{s.entries.push(imported);});this.result.imported++;}
         this.ledger.links[imported.id]={...clone(imported.google),origin:imported.origin};
       }
-      const linked=(await this.getState()).entries.filter(e=>!unresolved.has(e.id)&&e.google?.accountId===this.accountId&&this.selected(e.google,service,container)&&(!e.seriesId||e.seriesEdited));
+      const linkedState=await this.getState();
+      const linked=linkedState.entries.filter(e=>!unresolved.has(e.id)&&e.google?.accountId===this.accountId&&this.selected(e.google,service,container)&&(!e.seriesId||e.seriesEdited));
       for(const entry of linked) {
         try {
           let resource=resources.get(entry.google.id);
+          // A cursor-confirmed unchanged resource with its applied baseline has
+          // no work. Avoid cloning/validating the entire planner for every item.
+          // Unknown or different observations still take GET/ETag reconciliation.
+          if(service==='calendar'&&resource&&!entry.deletedAt&&!entry.calendarRestorePending&&resource.status!=='cancelled'&&!resource.deleted&&
+            same(resource,entry.google.resource)&&!Object.keys(entry.google.conflicts||{}).length&&
+            same(localProjection(entry,linkedState.projects),entry.google.base)&&
+            (this.ledger.colors?.[container]||entry.google.calendarColor||null)===(entry.google.calendarColor||null)&&
+            (entry.origin!=='hplan'||remindersDisabled(resource.reminders)))continue;
           // ETags are opaque: an observation merged from Drive may be either
           // older or newer than this cursor's cached view. Confirm only that
           // changed link instead of guessing which device observed it last.
@@ -323,13 +347,16 @@ class CalendarSync {
     }else patch=eventPatch(updated,merged,remote,conflicts,state.projects);
     let synced=resource;
     if(Object.keys(patch).length){
-      this.guard();try{synced=link.service==='tasks'?await this.client.patchTask(link.taskListId,link.id,patch,resource.etag):await this.client.patchEvent(link.calendarId,link.id,patch,resource.etag);this.result.exported++;}
+      this.guard();try{synced=await this.write(link.service,()=>link.service==='tasks'?this.client.patchTask(link.taskListId,link.id,patch,resource.etag):this.client.patchEvent(link.calendarId,link.id,patch,resource.etag));this.result.exported++;}
       catch(error){if(error.status===412&&retry){const fresh=await this.remote(link);return this.reconcile(id,fresh,false);}throw error;}
     }
     const base={...merged};for(const key of Object.keys(conflicts))base[key]=link.base?.[key]??remote[key];
     await this.change(s=>{const target=s.entries.find(x=>x.id===id);if(!target)return;
       // A fresh field merge protects typing that happened during HTTP requests.
       const latest=localProjection(target,s.projects),newer=mergeFields(local,latest,merged,at);
+      // Keep the edit evidence as well as the text: overwriting its real user
+      // time with this older RPC's time can make Drive select an older peer.
+      const freshUserEdit=target.contentEdit?.source==='user'&&(!same(latest,local)||!same(target.contentEdit,e.contentEdit));
       writeProjection(target,newer.merged,s.projects);
       const pending={...conflicts,...newer.conflicts};
       for(const [field,conflict]of Object.entries(pending)){
@@ -339,7 +366,7 @@ class CalendarSync {
       target.google={...target.google,calendarColor:this.ledger.colors?.[link.calendarId]||target.google.calendarColor||null,etag:synced.etag||resource.etag,resource:clone(synced),base,conflicts:pending,deleted:false};
       // API caches and ETags must persist, without looking like a content edit
       // on every device that independently observes the same Google resource.
-      if(!same({...e,google:null,updatedAt:null},{...target,google:null,updatedAt:null})){const remoteTime=Date.parse(resource.updated);const actual=Object.keys(patch).length||!Number.isFinite(remoteTime)?at:new Date(remoteTime).toISOString();target.updatedAt=actual;target.contentEdit={source:"google",at:actual};}
+      if(!freshUserEdit&&!same({...e,google:null,updatedAt:null},{...target,google:null,updatedAt:null})){const remoteTime=Date.parse(resource.updated);const actual=Object.keys(patch).length||!Number.isFinite(remoteTime)?at:new Date(remoteTime).toISOString();target.updatedAt=actual;target.contentEdit={source:"google",at:actual};}
     });
     const latest=(await this.getState()).entries.find(x=>x.id===id);if(latest)this.ledger.links[id]={...clone(latest.google),origin:latest.origin};
     return synced;
@@ -349,7 +376,7 @@ class CalendarSync {
     const event={...entryToEvent(e,state.projects),id:stableEventId(generation?id+':'+generation:id)};
     this.ledger.links[id]={service:'calendar',accountId:this.accountId,calendarId,id:event.id,origin:e.origin||'hplan',pendingCreate:true};await this.persist();
     let resource;
-    try{resource=await this.client.insertEvent(calendarId,event);}catch(error){if(error.status!==409)throw error;resource=await this.client.getEvent(calendarId,event.id);if(resource.extendedProperties?.private?.hplanId!==id)throw Error('Google 일정 식별자가 다른 항목에 사용됐습니다.');}
+    try{resource=await this.write('calendar',()=>this.client.insertEvent(calendarId,event));}catch(error){if(error.status!==409)throw error;resource=await this.client.getEvent(calendarId,event.id);if(resource.extendedProperties?.private?.hplanId!==id)throw Error('Google 일정 식별자가 다른 항목에 사용됐습니다.');}
     const link={service:'calendar',accountId:this.accountId,calendarId,id:resource.id,etag:resource.etag,generation,base:eventProjection(resource),resource:clone(resource),conflicts:{}};
     const after=await this.change(s=>{const target=s.entries.find(x=>x.id===id);if(!target){s.calendarDeletions={...(s.calendarDeletions||{}),[id]:{entryId:id,google:clone(link),origin:e.origin||'hplan',at:new Date(this.now()).toISOString()}};return;}target.origin=target.origin||'hplan';target.google=link;});
     const target=after.entries.find(x=>x.id===id);
